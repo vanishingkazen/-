@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>steamgamecode-launcher</AssemblyName>
+    <RootNamespace>SteamgamecodeLauncher</RootNamespace>
+    <ApplicationIcon>../assets/icons/win/icon.ico</ApplicationIcon>
+    <AssemblyTitle>steamgamecode 启动器</AssemblyTitle>
+    <Product>steamgamecode 启动器</Product>
+    <Description>steamgamecode 托盘和全局快捷键启动器</Description>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+</Project>

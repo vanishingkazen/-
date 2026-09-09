@@ -1,0 +1,28 @@
+node_modules
+dist-electron
+release
+dist
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.auth-state.json
+**/.DS_Store
+**/.vscode
+**/.idea
+scripts/
+**/scripts/
+scripts/manual-notarize.js
+
+# Local captures and test artifacts
+/clip-*.mp3
+/frame-*.png
+/x-video*.png
+/tmp/
+/main.js
+
+# Local .NET launcher build output
+/launcher/bin/
+/launcher/obj/

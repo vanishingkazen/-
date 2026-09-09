@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>窗口大小测试</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            padding: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+        }
+        .info {
+            margin: 10px 0;
+            padding: 10px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 5px;
+        }
+        .label {
+            font-weight: bold;
+            color: #00ff00;
+        }
+        .warning {
+            color: #ffaa00;
+            margin-top: 20px;
+            padding: 10px;
+            background: rgba(255, 170, 0, 0.2);
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <h1>窗口大小诊断</h1>
+    
+    <div class="info">
+        <span class="label">窗口内部大小:</span>
+        <span id="windowInner"></span>
+    </div>
+    
+    <div class="info">
+        <span class="label">窗口外部大小:</span>
+        <span id="windowOuter"></span>
+    </div>
+    
+    <div class="info">
+        <span class="label">屏幕大小:</span>
+        <span id="screenSize"></span>
+    </div>
+    
+    <div class="info">
+        <span class="label">设备像素比:</span>
+        <span id="devicePixelRatio"></span>
+    </div>
+    
+    <div class="info">
+        <span class="label">文档大小:</span>
+        <span id="documentSize"></span>
+    </div>
+    
+    <div class="info">
+        <span class="label">滚动大小:</span>
+        <span id="scrollSize"></span>
+    </div>
+    
+    <div class="warning">
+        <strong>注意：</strong>如果你的显示器是Retina显示器（缩放因子=2），那么逻辑像素和物理像素之间有2倍的关系。
+    </div>
+
+    <script>
+        function updateInfo() {
+            document.getElementById('windowInner').textContent = 
+                `${window.innerWidth} x ${window.innerHeight} 像素`;
+            
+            document.getElementById('windowOuter').textContent = 
+                `${window.outerWidth} x ${window.outerHeight} 像素`;
+            
+            document.getElementById('screenSize').textContent = 
+                `${screen.width} x ${screen.height} 像素 (可用: ${screen.availWidth} x ${screen.availHeight})`;
+            
+            document.getElementById('devicePixelRatio').textContent = 
+                window.devicePixelRatio || 1;
+            
+            document.getElementById('documentSize').textContent = 
+                `${document.documentElement.clientWidth} x ${document.documentElement.clientHeight} 像素`;
+            
+            document.getElementById('scrollSize').textContent = 
+                `${document.documentElement.scrollWidth} x ${document.documentElement.scrollHeight} 像素`;
+        }
+        
+        updateInfo();
+        setInterval(updateInfo, 1000);
+    </script>
+</body>
+</html>
