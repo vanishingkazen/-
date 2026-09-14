@@ -1,4 +1,4 @@
-import { app, BrowserWindow, screen, shell, ipcMain, session, desktopCapturer } from "electron"
+import { app, BrowserWindow, screen, shell, session, desktopCapturer, type BrowserWindowConstructorOptions, type WebContents } from "electron"
 import path from "path"
 import fs from "fs"
 import { initializeIpcHandlers } from "./ipcHandlers"
@@ -8,8 +8,10 @@ import { ShortcutsHelper } from "./shortcuts"
 import { initAutoUpdater } from "./autoUpdater"
 import { configHelper } from "./ConfigHelper"
 import { historyHelper } from "./HistoryHelper"
+import { ensureInterviewContextFile } from "./InterviewContextHelper"
 import { VoiceRecognitionHelper } from "./VoiceRecognitionHelper"
 import { MouseShakeDetector } from "./MouseShakeDetector"
+import { installCrashRecovery, requestAppRestart } from "./CrashRecovery"
 import * as dotenv from "dotenv"
 
 // Constants
@@ -18,6 +20,42 @@ const appIconPath = path.join(app.getAppPath(), "assets", "icons", "steam.svg")
 
 app.setName("steamgamecode")
 
+installCrashRecovery()
+
+const allowedExternalHosts = ["google.com", "supabase.co"]
+
+function configureWebContents(contents: WebContents): void {
+  contents.setWindowOpenHandler(({ url }) => {
+    try {
+      const hostname = new URL(url).hostname.toLowerCase()
+      if (
+        allowedExternalHosts.includes(hostname) ||
+        hostname.endsWith(".google.com") ||
+        hostname.endsWith(".supabase.co")
+      ) {
+        void shell.openExternal(url)
+      }
+    } catch {
+      console.warn("Blocked malformed window URL")
+    }
+
+    // Never create an unprotected Electron child window for remote content.
+    return { action: "deny" }
+  })
+
+  contents.on("will-attach-webview", (event) => {
+    event.preventDefault()
+  })
+}
+
+app.on("web-contents-created", (_event, contents) => {
+  configureWebContents(contents)
+})
+
+app.on("browser-window-created", (_event, window) => {
+  window.setContentProtection(true)
+  window.on("show", () => window.setContentProtection(true))
+})
 // Application State
 const state = {
   // Window management properties
@@ -266,7 +304,7 @@ async function createWindow(): Promise<void> {
   state.step = 60
   state.currentY = 50
 
-  const windowSettings: Electron.BrowserWindowConstructorOptions = {
+  const windowSettings: BrowserWindowConstructorOptions = {
     title: "steamgamecode",
     icon: appIconPath,
     width: 1200,
@@ -301,6 +339,7 @@ async function createWindow(): Promise<void> {
   }
 
   state.mainWindow = new BrowserWindow(windowSettings)
+  state.mainWindow.setContentProtection(true)
 
   // Add more detailed logging for window events
   state.mainWindow.webContents.on("did-finish-load", () => {
@@ -353,28 +392,12 @@ async function createWindow(): Promise<void> {
 
   // Configure window behavior
   state.mainWindow.webContents.setZoomFactor(1)
-  if (isDev) {
+  if (isDev && process.env.OPEN_DEVTOOLS === "1") {
     state.mainWindow.webContents.openDevTools()
   }
-  state.mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    console.log("Attempting to open URL:", url)
-    try {
-      const parsedURL = new URL(url);
-      const hostname = parsedURL.hostname;
-      const allowedHosts = ["google.com", "supabase.co"];
-      if (allowedHosts.includes(hostname) || hostname.endsWith(".google.com") || hostname.endsWith(".supabase.co")) {
-        shell.openExternal(url);
-        return { action: "deny" }; // Do not open this URL in a new Electron window
-      }
-    } catch (error) {
-      console.error("Invalid URL %d in setWindowOpenHandler: %d" , url , error);
-      return { action: "deny" }; // Deny access as URL string is malformed or invalid
-    }
-    return { action: "allow" };
-  })
+  configureWebContents(state.mainWindow.webContents)
 
   // Enhanced screen capture resistance
-  state.mainWindow.setContentProtection(true)
 
   state.mainWindow.setVisibleOnAllWorkspaces(true, {
     visibleOnFullScreen: true
@@ -599,6 +622,12 @@ async function initializeApp() {
     app.setPath('cache', cachePath)
       
     loadEnvVariables()
+
+    const startupConfig = configHelper.loadConfig()
+    const interviewContextPath = ensureInterviewContextFile(startupConfig.interviewContextPath)
+    if (startupConfig.interviewContextPath !== interviewContextPath) {
+      configHelper.updateConfig({ interviewContextPath })
+    }
     
     // Ensure a configuration file exists
     if (!configHelper.hasApiKey()) {
@@ -649,8 +678,7 @@ async function initializeApp() {
       "mode"
     )
   } catch (error) {
-    console.error("Failed to initialize application:", error)
-    app.quit()
+    requestAppRestart("startup-failure", error)
   }
 }
 

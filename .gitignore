@@ -26,3 +26,6 @@ scripts/manual-notarize.js
 # Local .NET launcher build output
 /launcher/bin/
 /launcher/obj/
+
+# Native addon build output
+native/**/build/

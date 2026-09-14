@@ -35,6 +35,7 @@ const electronAPI = {
     return ipcRenderer.invoke("open-subscription-portal", authData)
   },
   openSettingsPortal: () => ipcRenderer.invoke("open-settings-portal"),
+  openInterviewContextFile: () => ipcRenderer.invoke("open-interview-context-file"),
   setOpacity: (opacity: number) => ipcRenderer.invoke("set-opacity", opacity),
   updateContentDimensions: (dimensions: { width: number; height: number }) =>
     ipcRenderer.invoke("update-content-dimensions", dimensions),

@@ -135,6 +135,7 @@ export interface ElectronAPI {
   onCreditsUpdated: (callback: (credits: number) => void) => () => void
   onOutOfCredits: (callback: () => void) => () => void
   openSettingsPortal: () => Promise<void>
+  openInterviewContextFile: () => Promise<{ success: boolean; path?: string; error?: string }>
   setOpacity: (opacity: number) => Promise<{ success: boolean; opacity: number; error?: string }>
   getPlatform: () => string
   

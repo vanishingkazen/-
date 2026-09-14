@@ -125,6 +125,7 @@ interface ElectronAPI {
     characterCount: number
     error?: string
   }>
+  openInterviewContextFile: () => Promise<{ success: boolean; path?: string; error?: string }>
   onToggleVoiceInput: (callback: () => void) => () => void
   onVoiceStatus: (callback: (data: { source: "microphone" | "system"; state: string; message: string }) => void) => () => void
   onVoicePartial: (callback: (data: { source: "microphone" | "system"; text: string }) => void) => () => void

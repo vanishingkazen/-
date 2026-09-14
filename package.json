@@ -4,15 +4,17 @@
   "main": "./dist-electron/main.js",
   "scripts": {
     "clean": "npx rimraf dist dist-electron",
-    "dev": "cross-env NODE_ENV=development npm run clean && concurrently \"tsc -w -p tsconfig.electron.json\" \"vite\" \"wait-on -t 30000 http://localhost:54321 && electron ./dist-electron/main.js\"",
+    "dev": "npm run build:native:mac && cross-env NODE_ENV=development npm run clean && concurrently \"tsc -w -p tsconfig.electron.json\" \"vite\" \"wait-on -t 30000 http://localhost:54321 && electron ./dist-electron/main.js\"",
     "test": "echo \"No tests defined. Please contribute if you like\" && exit 0",
     "lint": "npx eslint .",
-    "start": "cross-env NODE_ENV=development concurrently \"tsc -p tsconfig.electron.json\" \"vite\" \"wait-on -t 30000 http://localhost:54321 && electron ./dist-electron/main.js\"",
-    "build": "cross-env NODE_ENV=production npm run clean && vite build && tsc -p tsconfig.electron.json",
+    "start": "npm run build:native:mac && cross-env NODE_ENV=development concurrently \"tsc -p tsconfig.electron.json\" \"vite\" \"wait-on -t 30000 http://localhost:54321 && electron ./dist-electron/main.js\"",
+    "build": "cross-env NODE_ENV=production npm run clean && npm run build:native:mac && vite build && tsc -p tsconfig.electron.json",
     "run-prod": "cross-env NODE_ENV=production electron ./dist-electron/main.js",
     "package": "npm run build && electron-builder build",
     "package-mac": "npm run build && electron-builder build --mac",
-    "package-win": "npm run build && electron-builder build --win"
+    "package-win": "npm run build && electron-builder build --win",
+    "build:native:mac": "node native/mac-command-interceptor/build.js",
+    "postinstall": "node native/mac-command-interceptor/build.js"
   },
   "build": {
     "appId": "com.pandoraq.steamgamecode",
@@ -23,7 +25,8 @@
       "assets/icons/steam.svg",
       "package.json",
       "electron/**/*",
-      "node_modules/uiohook-napi/**/*"
+      "node_modules/uiohook-napi/**/*",
+      "native/mac-command-interceptor/build/Release/*.node"
     ],
     "directories": {
       "output": "release",
@@ -32,7 +35,8 @@
     "asar": true,
     "asarUnpack": [
       "node_modules/uiohook-napi/**/*",
-      "**/*.node"
+      "**/*.node",
+      "native/**/*.node"
     ],
     "compression": "maximum",
     "generateUpdatesFilesForAllChannels": true,
@@ -193,6 +197,7 @@
     "eslint-plugin-react-hooks": "^4.6.0",
     "eslint-plugin-react-refresh": "^0.4.6",
     "globals": "^16.0.0",
+    "node-gyp": "^12.4.0",
     "postcss": "^8.4.49",
     "rimraf": "^6.0.1",
     "tailwindcss": "^3.4.15",

@@ -188,6 +188,7 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
   const [streamingEnabled, setStreamingEnabled] = useState(true);
   const [opacity, setOpacity] = useState(1);
   const savedOpacityRef = useRef(1);
+  const [interviewContextPath, setInterviewContextPath] = useState("");
   const [speechApiKey, setSpeechApiKey] = useState("");
   const [speechWorkspaceId, setSpeechWorkspaceId] = useState("");
   const [speechRegion, setSpeechRegion] = useState("cn-beijing");
@@ -229,6 +230,7 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
         debuggingModel?: string;
         streamingEnabled?: boolean;
         opacity?: number;
+        interviewContextPath?: string;
         speechApiKey?: string;
         speechWorkspaceId?: string;
         speechRegion?: string;
@@ -250,6 +252,7 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
           const loadedOpacity = Math.min(1, Math.max(0.1, config.opacity ?? 1));
           setOpacity(loadedOpacity);
           savedOpacityRef.current = loadedOpacity;
+          setInterviewContextPath(config.interviewContextPath || "");
           setSpeechApiKey(config.speechApiKey || "");
           setSpeechWorkspaceId(config.speechWorkspaceId || "");
           setSpeechRegion(config.speechRegion || "cn-beijing");
@@ -330,6 +333,7 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
         debuggingModel,
         streamingEnabled,
         opacity,
+        interviewContextPath,
         speechApiKey,
         speechWorkspaceId: speechWorkspaceId.trim(),
         speechRegion,
@@ -363,6 +367,19 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
   // Open external link handler
   const openExternalLink = (url: string) => {
     window.electronAPI.openLink(url);
+  };
+
+  const openInterviewContextFile = async () => {
+    const targetPath = interviewContextPath.trim();
+    if (targetPath) {
+      await window.electronAPI.updateConfig({ interviewContextPath: targetPath });
+    }
+    const result = await window.electronAPI.openInterviewContextFile();
+    if (!result.success) {
+      showToast("无法打开上下文文件", result.error || "请检查文件路径", "error");
+      return;
+    }
+    if (result.path) setInterviewContextPath(result.path);
   };
 
   const opacityProgress = `${((opacity - 0.1) / 0.9) * 100}%`;
@@ -420,6 +437,36 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
           <p className="text-xs text-black/50">拖动时实时预览，点击保存后永久生效。</p>
         </div>
         <div className="space-y-4 py-4">
+          <div className="space-y-2 rounded-lg border border-black/10 bg-white/[0.52] p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <label className="text-sm font-medium text-black" htmlFor="interviewContextPath">面试上下文文件</label>
+                <p className="mt-1 text-xs text-black/60">
+                  填入简历、项目经历和岗位资料。留空时使用默认路径，文件不存在会自动创建。
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="shrink-0 border-black/15 text-black hover:bg-black/[0.05]"
+                onClick={() => void openInterviewContextFile()}
+              >
+                打开文件
+              </Button>
+            </div>
+            <Input
+              id="interviewContextPath"
+              value={interviewContextPath}
+              onChange={(event) => setInterviewContextPath(event.target.value)}
+              placeholder="留空使用默认路径"
+              className="bg-white/[0.68] border-black/10 text-black font-mono"
+            />
+            <p className="text-[11px] text-black/50">
+              默认：~/Library/Application Support/steamgamecode/interview-context.md
+            </p>
+          </div>
+
           {/* API Provider Selection */}
           <div className="space-y-2">
             <label className="text-sm font-medium text-black">API Provider</label>

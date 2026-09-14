@@ -1,30 +1,140 @@
 import { globalShortcut, app } from "electron"
 import { IShortcutsHelperDeps } from "./main"
 import { configHelper } from "./ConfigHelper"
+import {
+  getMacCommandInterceptor,
+  type NativeShortcutSpec
+} from "./MacCommandInterceptor"
+
+const NATIVE_KEY_CODES: Record<string, number> = {
+  "0": 29,
+  "-": 27,
+  "=": 24,
+  "[": 33,
+  "]": 30,
+  Enter: 36,
+  H: 4,
+  K: 40,
+  L: 37,
+  M: 46,
+  N: 45,
+  Q: 12,
+  R: 15,
+  Left: 123,
+  Right: 124,
+  Down: 125,
+  Up: 126
+}
 
 export class ShortcutsHelper {
   private deps: IShortcutsHelperDeps
+  private macInterceptor = getMacCommandInterceptor()
+  private useNativeInterceptor = false
+  private nativeActionTimer: ReturnType<typeof setInterval> | null = null
+  private nativeShortcutSpecs: NativeShortcutSpec[] = []
+  private nativeShortcutHandlers = new Map<string, () => void | Promise<void>>()
 
   constructor(deps: IShortcutsHelperDeps) {
     this.deps = deps
+  }
+
+  private invokeShortcut(
+    accelerator: string,
+    callback: () => void | Promise<void>
+  ): void {
+    try {
+      const result = callback()
+      if (result instanceof Promise) {
+        void result.catch((error) => {
+          console.error(`Shortcut ${accelerator} failed:`, error)
+        })
+      }
+    } catch (error) {
+      console.error(`Shortcut ${accelerator} failed:`, error)
+    }
+  }
+
+  private buildNativeShortcut(accelerator: string): NativeShortcutSpec | null {
+    if (process.platform !== "darwin") return null
+    if (!accelerator.startsWith("CommandOrControl+") && !accelerator.startsWith("Command+")) {
+      return null
+    }
+
+    const parts = accelerator.split("+")
+    const key = parts[parts.length - 1]
+    const keyCode = NATIVE_KEY_CODES[key]
+    if (keyCode === undefined) return null
+
+    return {
+      action: accelerator,
+      keyCode,
+      shift: parts.includes("Shift"),
+      option: parts.includes("Alt") || parts.includes("Option"),
+      control: parts.includes("Control") || parts.includes("Ctrl")
+    }
+  }
+
+  private initializeNativeInterceptor(): void {
+    if (process.platform !== "darwin" || !this.macInterceptor) return
+
+    if (!this.macInterceptor.isTrusted()) {
+      console.warn(
+        "macOS Command interception needs Accessibility/Input Monitoring permission. Falling back to globalShortcut."
+      )
+      this.macInterceptor.requestPermission()
+      return
+    }
+
+    if (!this.macInterceptor.start()) {
+      console.warn("Failed to start macOS Command intercept event tap. Falling back to globalShortcut.")
+      return
+    }
+
+    this.macInterceptor.setEnabled(true)
+    this.useNativeInterceptor = true
+    this.nativeActionTimer = setInterval(() => this.flushNativeActions(), 15)
+    console.log("macOS Command interception enabled")
+  }
+
+  private flushNativeActions(): void {
+    if (!this.macInterceptor) return
+    for (const action of this.macInterceptor.pollActions()) {
+      const handler = this.nativeShortcutHandlers.get(action)
+      if (handler) this.invokeShortcut(action, handler)
+    }
+  }
+
+  private finalizeNativeInterceptor(): void {
+    if (!this.useNativeInterceptor || !this.macInterceptor) return
+    this.macInterceptor.setShortcuts(this.nativeShortcutSpecs)
+  }
+
+  private stopNativeInterceptor(): void {
+    if (this.nativeActionTimer) {
+      clearInterval(this.nativeActionTimer)
+      this.nativeActionTimer = null
+    }
+    this.macInterceptor?.setEnabled(false)
+    this.macInterceptor?.stop()
+    this.useNativeInterceptor = false
   }
 
   private registerShortcut(
     accelerator: string,
     callback: () => void | Promise<void>
   ): boolean {
+    if (this.useNativeInterceptor) {
+      const nativeShortcut = this.buildNativeShortcut(accelerator)
+      if (nativeShortcut) {
+        this.nativeShortcutHandlers.set(accelerator, callback)
+        this.nativeShortcutSpecs.push(nativeShortcut)
+        return true
+      }
+    }
+
     try {
       const registered = globalShortcut.register(accelerator, () => {
-        try {
-          const result = callback()
-          if (result instanceof Promise) {
-            void result.catch((error) => {
-              console.error(`Shortcut ${accelerator} failed:`, error)
-            })
-          }
-        } catch (error) {
-          console.error(`Shortcut ${accelerator} failed:`, error)
-        }
+        this.invokeShortcut(accelerator, callback)
       })
 
       if (!registered) {
@@ -64,6 +174,10 @@ export class ShortcutsHelper {
   }
 
   public registerGlobalShortcuts(): void {
+    this.nativeShortcutHandlers.clear()
+    this.nativeShortcutSpecs = []
+    this.initializeNativeInterceptor()
+
     this.registerShortcut("CommandOrControl+H", async () => {
       const mainWindow = this.deps.getMainWindow()
       if (mainWindow) {
@@ -270,8 +384,11 @@ export class ShortcutsHelper {
       }
     })
     
+    this.finalizeNativeInterceptor()
+
     // Unregister shortcuts when quitting
     app.on("will-quit", () => {
+      this.stopNativeInterceptor()
       globalShortcut.unregisterAll()
     })
   }

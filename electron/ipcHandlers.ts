@@ -6,7 +6,7 @@ import { IIpcHandlerDeps } from "./main"
 import { configHelper } from "./ConfigHelper"
 import { historyHelper } from "./HistoryHelper"
 import type { VoiceSource } from "./VoiceRecognitionHelper"
-import { getInterviewContextStatus } from "./InterviewContextHelper"
+import { ensureInterviewContextFile, getInterviewContextStatus } from "./InterviewContextHelper"
 
 export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
   console.log("Initializing IPC handlers")
@@ -46,20 +46,47 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
 
   ipcMain.handle("interview-context-status", () => {
     const config = configHelper.loadConfig()
+    const interviewContextPath = ensureInterviewContextFile(config.interviewContextPath)
+    if (config.interviewContextPath !== interviewContextPath) {
+      configHelper.updateConfig({ interviewContextPath })
+    }
     return getInterviewContextStatus(
       config.interviewContextEnabled,
-      config.interviewContextPath
+      interviewContextPath
     )
   })
 
   ipcMain.handle("interview-context-set-enabled", (_event, enabled: boolean) => {
     const config = configHelper.loadConfig()
-    const status = getInterviewContextStatus(Boolean(enabled), config.interviewContextPath)
+    const interviewContextPath = ensureInterviewContextFile(config.interviewContextPath)
+    const status = getInterviewContextStatus(Boolean(enabled), interviewContextPath)
+    if (config.interviewContextPath !== interviewContextPath) {
+      configHelper.updateConfig({ interviewContextPath })
+    }
     if (enabled && !status.available) {
       return { ...status, success: false }
     }
     configHelper.updateConfig({ interviewContextEnabled: Boolean(enabled) })
     return { ...status, enabled: Boolean(enabled), success: true }
+  })
+
+  ipcMain.handle("open-interview-context-file", async () => {
+    try {
+      const config = configHelper.loadConfig()
+      const interviewContextPath = ensureInterviewContextFile(config.interviewContextPath)
+      if (config.interviewContextPath !== interviewContextPath) {
+        configHelper.updateConfig({ interviewContextPath })
+      }
+      const error = await shell.openPath(interviewContextPath)
+      return error
+        ? { success: false, path: interviewContextPath, error }
+        : { success: true, path: interviewContextPath }
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "无法打开面试上下文文件"
+      }
+    }
   })
 
   ipcMain.handle("check-api-key", () => {

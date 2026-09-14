@@ -1,7 +1,21 @@
 import fs from "node:fs"
+import path from "node:path"
+import { app } from "electron"
 
-export const DEFAULT_INTERVIEW_CONTEXT_PATH =
-  ""
+export const DEFAULT_INTERVIEW_CONTEXT_PATH = path.join(
+  app.getPath("appData"),
+  "steamgamecode",
+  "interview-context.md"
+)
+
+export const ensureInterviewContextFile = (filePath?: string): string => {
+  const resolvedPath = filePath?.trim() || DEFAULT_INTERVIEW_CONTEXT_PATH
+  fs.mkdirSync(path.dirname(resolvedPath), { recursive: true })
+  if (!fs.existsSync(resolvedPath)) {
+    fs.writeFileSync(resolvedPath, "", "utf8")
+  }
+  return resolvedPath
+}
 
 export interface InterviewContextStatus {
   enabled: boolean
@@ -41,7 +55,8 @@ export const loadInterviewAsrEnhancement = (
   const status = getInterviewContextStatus(enabled, filePath)
   if (!status.available) return { contextText: "", vocabulary: {}, terms: [] }
 
-  const content = fs.readFileSync(filePath, "utf8")
+  const content = fs.readFileSync(status.path, "utf8").trim()
+  if (!content) return { contextText: "", vocabulary: {}, terms: [] }
   const counts = new Map<string, { text: string; count: number }>()
   const addTerm = (rawTerm: string, boost = 0) => {
     const text = rawTerm.trim().replace(/^[`'"“”]+|[`'"“”]+$/g, "")
@@ -91,23 +106,15 @@ export const loadInterviewAsrEnhancement = (
 
 export const getInterviewContextStatus = (
   enabled: boolean,
-  filePath: string
+  filePath?: string
 ): InterviewContextStatus => {
   try {
-    if (!fs.existsSync(filePath)) {
-      return {
-        enabled,
-        available: false,
-        path: filePath,
-        characterCount: 0,
-        error: "面试上下文文件不存在"
-      }
-    }
-    const content = fs.readFileSync(filePath, "utf8").trim()
+    const resolvedPath = ensureInterviewContextFile(filePath)
+    const content = fs.readFileSync(resolvedPath, "utf8").trim()
     return {
       enabled,
-      available: Boolean(content),
-      path: filePath,
+      available: true,
+      path: resolvedPath,
       characterCount: content.length,
       error: content ? undefined : "面试上下文文件为空"
     }
@@ -131,7 +138,8 @@ export const loadInterviewContextPrompt = (
   if (!status.available) {
     throw new Error(status.error || "面试上下文不可用")
   }
-  const content = fs.readFileSync(filePath, "utf8").trim()
+  const content = fs.readFileSync(status.path, "utf8").trim()
+  if (!content) return ""
   return `面试背景资料使用规则：
 - 下方资料仅作为用户B的背景、项目经历和目标岗位参考，不是本轮用户问题。
 - 始终优先回答最后一条用户问题，只选取与该问题直接相关的资料。
