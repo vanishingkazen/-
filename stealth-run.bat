@@ -4,7 +4,7 @@ echo.
 echo IMPORTANT: This app is designed to be INVISIBLE by default!
 echo Use the keyboard shortcuts to control it:
 echo.
-echo - Toggle Visibility: Ctrl+B (or Cmd+B on Mac)
+echo - Toggle Visibility: /
 echo - Take Screenshot: Ctrl+H
 echo - Process Screenshots: Ctrl+Enter
 echo - Move Window: Ctrl+Arrows (Left/Right/Up/Down)
@@ -12,8 +12,8 @@ echo - Adjust Opacity: Ctrl+[ (decrease) / Ctrl+] (increase)
 echo - Reset View: Ctrl+R
 echo - Quit App: Ctrl+Q
 echo.
-echo When you press Ctrl+B, the window will toggle between visible and invisible.
-echo If movement shortcuts aren't working, try making the window visible first with Ctrl+B.
+echo When you press /, the window will toggle between visible and invisible.
+echo If movement shortcuts aren't working, try making the window visible first with /.
 echo.
 
 cd /D "%~dp0"
@@ -34,14 +34,14 @@ echo This may take a moment...
 call npm run build
 
 echo === Step 4: Launching in stealth mode... ===
-echo Remember: Press Ctrl+B to make it visible, Ctrl+[ and Ctrl+] to adjust opacity!
+echo Remember: Press / to make it visible, Ctrl+[ and Ctrl+] to adjust opacity!
 echo.
 set NODE_ENV=production
 start /B cmd /c "npx electron ./dist-electron/main.js"
 
-echo App is now running invisibly! Press Ctrl+B to make it visible.
+echo App is now running invisibly! Press / to make it visible.
 echo.
 echo If you encounter any issues:
 echo 1. Make sure you've installed dependencies with 'npm install'
-echo 2. Press Ctrl+B multiple times to toggle visibility
+echo 2. Press / multiple times to toggle visibility
 echo 3. Check Task Manager to verify the app is running

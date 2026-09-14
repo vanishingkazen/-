@@ -99,7 +99,7 @@ This project is licensed under the GNU Affero General Public License v3.0 (AGPL-
 
 - **Environment Setup**: Ensure Node.js (v16+) and npm/bun are installed. Grant screen recording permissions (see README.md for details).
 - **API Usage**: Be mindful of OpenAI API costs when testing AI features.
-- **Troubleshooting**: Run `npm run clean` before builds if issues arise, and use Ctrl+B/Cmd+B to toggle visibility.
+- **Troubleshooting**: Run `npm run clean` before builds if issues arise, and use `/` to toggle visibility.
 
 ## Maintainer Notes
 

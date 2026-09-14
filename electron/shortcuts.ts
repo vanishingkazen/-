@@ -9,6 +9,35 @@ export class ShortcutsHelper {
     this.deps = deps
   }
 
+  private registerShortcut(
+    accelerator: string,
+    callback: () => void | Promise<void>
+  ): boolean {
+    try {
+      const registered = globalShortcut.register(accelerator, () => {
+        try {
+          const result = callback()
+          if (result instanceof Promise) {
+            void result.catch((error) => {
+              console.error(`Shortcut ${accelerator} failed:`, error)
+            })
+          }
+        } catch (error) {
+          console.error(`Shortcut ${accelerator} failed:`, error)
+        }
+      })
+
+      if (!registered) {
+        console.warn(`Shortcut ${accelerator} was not registered because it is already in use.`)
+      }
+
+      return registered
+    } catch (error) {
+      console.error(`Shortcut ${accelerator} could not be registered:`, error)
+      return false
+    }
+  }
+
   private adjustOpacity(delta: number): void {
     const mainWindow = this.deps.getMainWindow();
     if (!mainWindow) return;
@@ -35,7 +64,7 @@ export class ShortcutsHelper {
   }
 
   public registerGlobalShortcuts(): void {
-    globalShortcut.register("CommandOrControl+H", async () => {
+    this.registerShortcut("CommandOrControl+H", async () => {
       const mainWindow = this.deps.getMainWindow()
       if (mainWindow) {
         console.log("Taking screenshot...")
@@ -52,7 +81,7 @@ export class ShortcutsHelper {
       }
     })
 
-    globalShortcut.register("CommandOrControl+Enter", async () => {
+    this.registerShortcut("CommandOrControl+Enter", async () => {
       const rawConversation = this.deps.voiceRecognitionHelper?.getConversationTranscript()
       const conversation = rawConversation
         ? await this.deps.processingHelper?.correctVoiceConversation(rawConversation) || rawConversation
@@ -85,7 +114,7 @@ export class ShortcutsHelper {
       if (voiceText) this.deps.voiceRecognitionHelper?.clearTranscript()
     })
 
-    globalShortcut.register("CommandOrControl+R", () => {
+    this.registerShortcut("CommandOrControl+R", () => {
       console.log(
         "Command + R pressed. Canceling requests and resetting queues..."
       )
@@ -113,37 +142,49 @@ export class ShortcutsHelper {
     })
 
     // New shortcuts for moving the window
-    globalShortcut.register("CommandOrControl+Left", () => {
+    this.registerShortcut("CommandOrControl+Left", () => {
       console.log("Command/Ctrl + Left pressed. Moving window left.")
       this.deps.moveWindowLeft()
     })
 
-    globalShortcut.register("CommandOrControl+Right", () => {
+    this.registerShortcut("CommandOrControl+Right", () => {
       console.log("Command/Ctrl + Right pressed. Moving window right.")
       this.deps.moveWindowRight()
     })
 
-    globalShortcut.register("CommandOrControl+Down", () => {
+    this.registerShortcut("CommandOrControl+Down", () => {
       console.log("Command/Ctrl + down pressed. Moving window down.")
       this.deps.moveWindowDown()
     })
 
-    globalShortcut.register("CommandOrControl+Up", () => {
+    this.registerShortcut("CommandOrControl+Up", () => {
       console.log("Command/Ctrl + Up pressed. Moving window Up.")
       this.deps.moveWindowUp()
     })
 
-    globalShortcut.register("CommandOrControl+Shift+0", () => {
+    this.registerShortcut("CommandOrControl+Shift+0", () => {
       console.log("Command/Ctrl + Shift + 0 pressed. Resetting window position.")
       this.deps.resetWindowPosition()
     })
 
-    globalShortcut.register("CommandOrControl+B", () => {
-      console.log("Command/Ctrl + B pressed. Toggling window visibility.")
+    if (process.platform === "darwin") {
+      this.registerShortcut("Command+N", () => {
+        console.log("Cmd + N pressed. Creating a new chat session.")
+        const mainWindow = this.deps.getMainWindow()
+        if (!mainWindow || mainWindow.isDestroyed()) return
+
+        // Show without activation; never steal focus from the foreground app.
+        if (!this.deps.isVisible()) this.deps.toggleMainWindow()
+        mainWindow.webContents.send("new-chat-session")
+      })
+    }
+
+    this.registerShortcut("/", () => {
+      console.log("/ pressed. Toggling window visibility.")
       this.deps.toggleMainWindow()
     })
 
-    globalShortcut.register("CommandOrControl+K", () => {
+    this.registerShortcut("CommandOrControl+K", () => {
       console.log("Command/Ctrl + K pressed. Focusing chat input.")
       const mainWindow = this.deps.getMainWindow()
       if (!mainWindow || mainWindow.isDestroyed()) return
@@ -155,45 +196,45 @@ export class ShortcutsHelper {
       mainWindow.webContents.send("focus-chat-input")
     })
 
-    globalShortcut.register("CommandOrControl+Shift+M", () => {
+    this.registerShortcut("CommandOrControl+Shift+M", () => {
       console.log("Command/Ctrl + Shift + M pressed. Toggling voice input.")
       const mainWindow = this.deps.getMainWindow()
       if (!mainWindow || mainWindow.isDestroyed()) return
       mainWindow.webContents.send("toggle-voice-input")
     })
 
-    globalShortcut.register("CommandOrControl+Alt+Up", () => {
+    this.registerShortcut("CommandOrControl+Alt+Up", () => {
       console.log("Command/Ctrl + Alt + Up pressed. Scrolling chat up.")
       const mainWindow = this.deps.getMainWindow()
       if (!mainWindow || mainWindow.isDestroyed()) return
       mainWindow.webContents.send("scroll-chat", { direction: "up" })
     })
 
-    globalShortcut.register("CommandOrControl+Alt+Down", () => {
+    this.registerShortcut("CommandOrControl+Alt+Down", () => {
       console.log("Command/Ctrl + Alt + Down pressed. Scrolling chat down.")
       const mainWindow = this.deps.getMainWindow()
       if (!mainWindow || mainWindow.isDestroyed()) return
       mainWindow.webContents.send("scroll-chat", { direction: "down" })
     })
 
-    globalShortcut.register("CommandOrControl+Q", () => {
+    this.registerShortcut("CommandOrControl+Q", () => {
       console.log("Command/Ctrl + Q pressed. Quitting application.")
       app.quit()
     })
 
     // Adjust opacity shortcuts
-    globalShortcut.register("CommandOrControl+[", () => {
+    this.registerShortcut("CommandOrControl+[", () => {
       console.log("Command/Ctrl + [ pressed. Decreasing opacity.")
       this.adjustOpacity(-0.1)
     })
 
-    globalShortcut.register("CommandOrControl+]", () => {
+    this.registerShortcut("CommandOrControl+]", () => {
       console.log("Command/Ctrl + ] pressed. Increasing opacity.")
       this.adjustOpacity(0.1)
     })
     
     // Zoom controls
-    globalShortcut.register("CommandOrControl+-", () => {
+    this.registerShortcut("CommandOrControl+-", () => {
       console.log("Command/Ctrl + - pressed. Zooming out.")
       const mainWindow = this.deps.getMainWindow()
       if (mainWindow) {
@@ -202,7 +243,7 @@ export class ShortcutsHelper {
       }
     })
     
-    globalShortcut.register("CommandOrControl+0", () => {
+    this.registerShortcut("CommandOrControl+0", () => {
       console.log("Command/Ctrl + 0 pressed. Resetting zoom.")
       const mainWindow = this.deps.getMainWindow()
       if (mainWindow) {
@@ -210,7 +251,7 @@ export class ShortcutsHelper {
       }
     })
     
-    globalShortcut.register("CommandOrControl+=", () => {
+    this.registerShortcut("CommandOrControl+=", () => {
       console.log("Command/Ctrl + = pressed. Zooming in.")
       const mainWindow = this.deps.getMainWindow()
       if (mainWindow) {
@@ -220,7 +261,7 @@ export class ShortcutsHelper {
     })
     
     // Delete last screenshot shortcut
-    globalShortcut.register("CommandOrControl+L", () => {
+    this.registerShortcut("CommandOrControl+L", () => {
       console.log("Command/Ctrl + L pressed. Deleting last screenshot.")
       const mainWindow = this.deps.getMainWindow()
       if (mainWindow) {

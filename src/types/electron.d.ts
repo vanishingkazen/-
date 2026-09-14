@@ -29,6 +29,8 @@ export interface ElectronAPI {
   ) => () => void
   onResetView: (callback: () => void) => () => void
   onFocusChatInput: (callback: () => void) => () => void
+  onNewChatSession: (callback: () => void) => () => void
+  onDeleteLastScreenshot: (callback: () => void) => () => void
   onScrollChat: (callback: (data: { direction: "up" | "down" }) => void) => () => void
   onSolutionStart: (callback: (data?: { questionMode?: "coding" | "iq" }) => void) => () => void
   onDebugStart: (callback: () => void) => () => void
@@ -133,6 +135,7 @@ export interface ElectronAPI {
   onCreditsUpdated: (callback: (credits: number) => void) => () => void
   onOutOfCredits: (callback: () => void) => () => void
   openSettingsPortal: () => Promise<void>
+  setOpacity: (opacity: number) => Promise<{ success: boolean; opacity: number; error?: string }>
   getPlatform: () => string
   
   // New methods for OpenAI integration

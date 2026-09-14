@@ -42,6 +42,8 @@ interface ElectronAPI {
   ) => () => void
   onResetView: (callback: () => void) => () => void
   onFocusChatInput: (callback: () => void) => () => void
+  onNewChatSession: (callback: () => void) => () => void
+  onDeleteLastScreenshot: (callback: () => void) => () => void
   onScrollChat: (callback: (data: { direction: "up" | "down" }) => void) => () => void
   onSolutionStart: (callback: (data?: { questionMode?: "coding" | "iq" }) => void) => () => void
   onDebugStart: (callback: () => void) => () => void

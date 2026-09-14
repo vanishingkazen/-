@@ -1,28 +1,15 @@
 // ProcessingHelper.ts
 import fs from "node:fs"
-import path from "node:path"
 import { ScreenshotHelper } from "./ScreenshotHelper"
 import { IProcessingHelperDeps } from "./main"
 import * as axios from "axios"
-import { app, BrowserWindow, dialog } from "electron"
+import { BrowserWindow } from "electron"
 import { OpenAI } from "openai"
 import { configHelper } from "./ConfigHelper"
 import { historyHelper } from "./HistoryHelper"
 import { loadInterviewAsrEnhancement, loadInterviewContextPrompt } from "./InterviewContextHelper"
 import type { VoiceConversationTranscript } from "./VoiceRecognitionHelper"
 import Anthropic from '@anthropic-ai/sdk';
-
-// Interface for Gemini API requests
-interface GeminiMessage {
-  role: string;
-  parts: Array<{
-    text?: string;
-    inlineData?: {
-      mimeType: string;
-      data: string;
-    }
-  }>;
-}
 
 interface GeminiResponse {
   candidates: Array<{
@@ -34,19 +21,6 @@ interface GeminiResponse {
     finishReason: string;
   }>;
 }
-interface AnthropicMessage {
-  role: 'user' | 'assistant';
-  content: Array<{
-    type: 'text' | 'image';
-    text?: string;
-    source?: {
-      type: 'base64';
-      media_type: string;
-      data: string;
-    };
-  }>;
-}
-
 type DeepSeekStreamingRequest =
   OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming & {
     thinking?: { type: "enabled" | "disabled" }
@@ -65,6 +39,14 @@ const isOfficialDeepSeekEndpoint = (baseURL: string): boolean => {
     return false
   }
 }
+
+// Streaming is currently only compatible with the official DeepSeek
+// endpoint. The toggle is a master switch; vendor matching decides whether
+// streaming actually applies.
+const isDeepSeekStreaming = (
+  config: { streamingEnabled?: boolean },
+  baseURL: string
+): boolean => config.streamingEnabled !== false && isOfficialDeepSeekEndpoint(baseURL)
 
 export class ProcessingHelper {
   private deps: IProcessingHelperDeps
@@ -347,102 +329,63 @@ export class ProcessingHelper {
           throw new Error("Failed to load screenshot data");
         }
 
-        if (config.questionMode === "iq") {
-          const iqResult = await this.solveIqScreenshots(
-            validScreenshots,
-            signal,
-            userRequest
-          )
-
-          if (!iqResult.success || !iqResult.data) {
-            throw new Error(iqResult.error || "IQ 题目解答失败")
-          }
-
-          const iqProblem = {
-            problem_statement: "IQ 测评题",
-            constraints: "使用视觉模型直接分析截图"
-          }
-          const iqSolution = {
-            display_text: iqResult.data,
-            basic_code: "",
-            code: "",
-            thoughts: [],
-            time_complexity: "不适用",
-            space_complexity: "不适用"
-          }
-
-          this.deps.setProblemInfo(iqProblem)
-          historyHelper.saveSolution(
-            iqProblem,
-            iqSolution,
-            "iq",
-            existingScreenshots
-          )
-
-          mainWindow.webContents.send("processing-status", {
-            message: "IQ 题目解答完成",
-            progress: 100
-          })
-          mainWindow.webContents.send("solution-stream", {
-            content: iqResult.data,
-            isThinking: false,
-            done: true
-          })
-          mainWindow.webContents.send(
-            this.deps.PROCESSING_EVENTS.SOLUTION_SUCCESS,
-            iqSolution
-          )
-
-          // IQ questions are independent. Return to the capture queue so the
-          // next screenshot starts a fresh visual solve instead of debugging.
-          this.screenshotHelper.clearQueues()
-          this.deps.setView("queue")
-          return
-        }
-
-        const result = await this.processScreenshotsHelper(
+        const result = await this.solveScreenshotsDirectly(
           validScreenshots,
           signal,
           userRequest
         )
 
-        if (!result.success) {
-          console.log("Processing failed:", result.error)
-          if (result.error?.includes("API Key") || result.error?.includes("OpenAI") || result.error?.includes("Gemini")) {
-            mainWindow.webContents.send(
-              this.deps.PROCESSING_EVENTS.API_KEY_INVALID
-            )
-          } else {
-            mainWindow.webContents.send(
-              this.deps.PROCESSING_EVENTS.INITIAL_SOLUTION_ERROR,
-              result.error
-            )
-          }
-          // Reset view back to queue on error
-          console.log("Resetting view to queue due to error")
-          this.deps.setView("queue")
-          return
+        if (!result.success || !result.data) {
+          throw new Error(result.error || "视觉模型解题失败")
         }
 
+        const answer = result.data
+        const title = answer
+          .split(/\r?\n/)
+          .map((line) => line.replace(/^#+\s*/, "").trim())
+          .find(Boolean)
+          ?.slice(0, 100) || "截图视觉解题"
+        const problemInfo = {
+          problem_statement: title,
+          constraints: "视觉模型直接分析截图并解答"
+        }
+        const solution = {
+          display_text: answer,
+          basic_code: "",
+          code: "",
+          thoughts: [],
+          time_complexity: "由模型在解答中说明",
+          space_complexity: "由模型在解答中说明"
+        }
+
+        this.deps.setProblemInfo(problemInfo)
         historyHelper.saveSolution(
-          this.deps.getProblemInfo(),
-          result.data,
-          configHelper.loadConfig().language,
+          problemInfo,
+          solution,
+          config.language || "auto",
           existingScreenshots
         )
 
-        // Only set view to solutions if processing succeeded
-        console.log("Setting view to solutions after successful processing")
+        mainWindow.webContents.send("processing-status", {
+          message: "视觉模型解题完成",
+          progress: 100
+        })
+        mainWindow.webContents.send("solution-stream", {
+          content: answer,
+          isThinking: false,
+          done: true
+        })
         mainWindow.webContents.send(
           this.deps.PROCESSING_EVENTS.SOLUTION_SUCCESS,
-          result.data
+          solution
         )
-        this.deps.setView("solutions")
+
+        // Every screenshot batch is independent, so the next capture starts
+        // from a clean queue regardless of whether it is code or a quiz.
+        this.screenshotHelper.clearQueues()
+        this.deps.setView("queue")
+        return
       } catch (error: any) {
-        mainWindow.webContents.send(
-          this.deps.PROCESSING_EVENTS.INITIAL_SOLUTION_ERROR,
-          error
-        )
         console.error("Processing error:", error)
         if (axios.isCancel(error)) {
           mainWindow.webContents.send(
@@ -565,7 +508,7 @@ export class ProcessingHelper {
     }
   }
 
-  private async solveIqScreenshots(
+  private async solveScreenshotsDirectly(
     screenshots: Array<{ path: string; data: string }>,
     signal: AbortSignal,
     userRequest = ""
@@ -573,18 +516,10 @@ export class ProcessingHelper {
     const config = configHelper.loadConfig()
     const mainWindow = this.deps.getMainWindow()
     const imageDataList = screenshots.map((screenshot) => screenshot.data)
-    const prompt = `你是专业的 IQ 与认知能力测评视觉解题助手。请直接观察所提供的全部截图并完成题目，不要把它当作编程题，也不要生成代码。
-
-要求：
-1. 综合分析题干、图形、数字、文字和全部选项，适用于图形矩阵、旋转、镜像、空间折叠、数列、类比、分类及逻辑推理题。
-2. 第一行必须写“答案：<选项编号或具体答案>”，让用户能立即看到结论。
-3. 随后依次给出“置信度：高/中/低”、“题型：...”和“规律：...”，规律说明保持简短、清晰。
-4. 如果题干或选项被遮挡、截图不完整，禁止猜测；答案写“无法确定”，并明确指出需要补拍的内容。
-5. 全程使用简体中文，不要输出 JSON，不要复述无关的页面信息。
-${userRequest.trim() ? `\n用户补充要求：${userRequest.trim()}` : ""}`
+    const prompt = `分析截图中的题目信息，先判断语言，然后分析题干进行解题。${userRequest.trim() ? `\n\n用户补充要求：${userRequest.trim()}` : ""}`
 
     mainWindow?.webContents.send("processing-status", {
-      message: "正在使用视觉模型分析 IQ 题目...",
+      message: "正在使用视觉模型直接解题...",
       progress: 35
     })
 
@@ -598,10 +533,6 @@ ${userRequest.trim() ? `\n用户补充要求：${userRequest.trim()}` : ""}`
             model: config.extractionModel || "gpt-4o",
             messages: [
               {
-                role: "system",
-                content: "你负责直接观察图片并解答 IQ 测评题，答案必须准确、简洁。"
-              },
-              {
                 role: "user",
                 content: [
                   { type: "text", text: prompt },
@@ -612,7 +543,7 @@ ${userRequest.trim() ? `\n用户补充要求：${userRequest.trim()}` : ""}`
                 ]
               }
             ],
-            max_tokens: config.apiProvider === "openai-compatible" ? 8192 : 2000,
+            max_tokens: config.apiProvider === "openai-compatible" ? 8192 : 4000,
             temperature: 0.1
           },
           { signal }
@@ -636,7 +567,7 @@ ${userRequest.trim() ? `\n用户补充要求：${userRequest.trim()}` : ""}`
             ],
             generationConfig: {
               temperature: 0.1,
-              maxOutputTokens: 2000
+              maxOutputTokens: 8192
             }
           },
           { signal }
@@ -650,7 +581,7 @@ ${userRequest.trim() ? `\n用户补充要求：${userRequest.trim()}` : ""}`
         const response = await this.anthropicClient.messages.create(
           {
             model: config.extractionModel || "claude-3-7-sonnet-20250219",
-            max_tokens: 2000,
+            max_tokens: 8192,
             temperature: 0.1,
             messages: [
               {
@@ -682,673 +613,13 @@ ${userRequest.trim() ? `\n用户补充要求：${userRequest.trim()}` : ""}`
       return { success: true, data: answer }
     } catch (error: any) {
       if (error?.name === "AbortError" || axios.isCancel(error)) {
-        return { success: false, error: "IQ 题目解答已取消" }
+        return { success: false, error: "视觉模型解题已取消" }
       }
-      console.error("IQ visual solving failed:", error)
+      console.error("Direct visual solving failed:", error)
       return {
         success: false,
-        error: error?.message || "视觉模型解答失败，请检查截图和模型配置"
+        error: error?.message || "视觉模型直接解题失败，请检查截图和模型配置"
       }
-    }
-  }
-
-  private async processScreenshotsHelper(
-    screenshots: Array<{ path: string; data: string }>,
-    signal: AbortSignal,
-    userRequest = ""
-  ) {
-    try {
-      const config = configHelper.loadConfig();
-      const language = await this.getLanguage();
-      const mainWindow = this.deps.getMainWindow();
-      
-      // Step 1: Extract problem info using AI Vision API (OpenAI or Gemini)
-      const imageDataList = screenshots.map(screenshot => screenshot.data);
-      
-      // Update the user on progress
-      if (mainWindow) {
-        mainWindow.webContents.send("processing-status", {
-          message: "Analyzing problem from screenshots...",
-          progress: 20
-        });
-      }
-
-      let problemInfo;
-      
-      if (config.apiProvider === "openai" || config.apiProvider === "openai-compatible") {
-        // Verify OpenAI client
-        if (!this.openaiClient) {
-          this.initializeAIClient(); // Try to reinitialize
-          
-          if (!this.openaiClient) {
-            return {
-              success: false,
-              error: "OpenAI API key not configured or invalid. Please check your settings."
-            };
-          }
-        }
-
-        // Use OpenAI for processing
-        const messages = [
-          {
-            role: "system" as const, 
-            content: "你是编程题解析助手。分析题目截图并提取所有相关信息。只返回 JSON，不要添加其他文字。JSON 必须包含 problem_statement、constraints、example_input、example_output、starter_code、required_signature。若截图中存在平台提供的代码模板、类定义、函数定义或方法签名，必须逐字提取到 starter_code，并将不可更改的类名、方法名、参数及返回类型写入 required_signature；若截图没有代码模板，这两个字段返回空字符串。除代码、变量名和原始输入输出外，所有字段值必须使用简体中文。"
-          },
-          {
-            role: "user" as const,
-            content: [
-              {
-                type: "text" as const, 
-                text: `请从这些截图中提取编程题信息并按指定 JSON 格式返回。特别检查截图中的编辑器区域：如果存在预置代码模板，必须完整、准确地提取，不能只提取函数名。所有说明必须使用简体中文。解题语言为 ${language}。`
-              },
-              ...imageDataList.map(data => ({
-                type: "image_url" as const,
-                image_url: { url: `data:image/png;base64,${data}` }
-              }))
-            ]
-          }
-        ];
-
-        // Send to OpenAI Vision API
-        const extractionResponse = await this.openaiClient.chat.completions.create({
-          model: config.extractionModel || "gpt-4o",
-          messages: messages,
-          max_tokens: config.apiProvider === "openai-compatible" ? 16384 : 4000,
-          temperature: 0.2
-        });
-
-        // Parse the response
-        try {
-          const extractionMessage = extractionResponse.choices[0]?.message as {
-            content: string | null;
-            reasoning_content?: string | null;
-          };
-          const responseText = extractionMessage?.content;
-          if (!responseText?.trim()) {
-            const finishReason = extractionResponse.choices[0]?.finish_reason || "unknown";
-            const reasoningLength = extractionMessage?.reasoning_content?.length || 0;
-            throw new Error(`模型没有返回题目解析正文（finish_reason=${finishReason}, reasoning_length=${reasoningLength}）`);
-          }
-          // Handle when OpenAI might wrap the JSON in markdown code blocks
-          const jsonText = responseText.replace(/```json|```/g, '').trim();
-          problemInfo = JSON.parse(jsonText);
-        } catch (error) {
-          console.error("Error parsing OpenAI response:", error);
-          return {
-            success: false,
-            error: "Failed to parse problem information. Please try again or use clearer screenshots."
-          };
-        }
-      } else if (config.apiProvider === "gemini")  {
-        // Use Gemini API
-        if (!this.geminiApiKey) {
-          return {
-            success: false,
-            error: "Gemini API key not configured. Please check your settings."
-          };
-        }
-
-        try {
-          // Create Gemini message structure
-          const geminiMessages: GeminiMessage[] = [
-            {
-              role: "user",
-              parts: [
-                {
-                  text: `你是编程题解析助手。分析题目截图并提取所有相关信息。只返回 JSON，必须包含 problem_statement、constraints、example_input、example_output、starter_code、required_signature。若编辑器区域存在预置代码模板、类定义、函数定义或方法签名，必须逐字完整提取到 starter_code，并将不可更改的类名、方法名、参数及返回类型写入 required_signature；若没有模板则两个字段返回空字符串。除代码、变量名和原始输入输出外，所有字段值必须使用简体中文。解题语言为 ${language}。`
-                },
-                ...imageDataList.map(data => ({
-                  inlineData: {
-                    mimeType: "image/png",
-                    data: data
-                  }
-                }))
-              ]
-            }
-          ];
-
-          // Make API request to Gemini
-          const response = await axios.default.post(
-            `https://generativelanguage.googleapis.com/v1beta/models/${config.extractionModel || "gemini-2.0-flash"}:generateContent?key=${this.geminiApiKey}`,
-            {
-              contents: geminiMessages,
-              generationConfig: {
-                temperature: 0.2,
-                maxOutputTokens: 4000
-              }
-            },
-            { signal }
-          );
-
-          const responseData = response.data as GeminiResponse;
-          
-          if (!responseData.candidates || responseData.candidates.length === 0) {
-            throw new Error("Empty response from Gemini API");
-          }
-          
-          const responseText = responseData.candidates[0].content.parts[0].text;
-          
-          // Handle when Gemini might wrap the JSON in markdown code blocks
-          const jsonText = responseText.replace(/```json|```/g, '').trim();
-          problemInfo = JSON.parse(jsonText);
-        } catch (error) {
-          console.error("Error using Gemini API:", error);
-          return {
-            success: false,
-            error: "Failed to process with Gemini API. Please check your API key or try again later."
-          };
-        }
-      } else if (config.apiProvider === "anthropic") {
-        if (!this.anthropicClient) {
-          return {
-            success: false,
-            error: "Anthropic API key not configured. Please check your settings."
-          };
-        }
-
-        try {
-          const messages = [
-            {
-              role: "user" as const,
-              content: [
-                {
-                  type: "text" as const,
-                  text: `请从这些截图中提取编程题信息。只返回 JSON，必须包含 problem_statement、constraints、example_input、example_output、starter_code、required_signature。若编辑器区域存在预置代码模板、类定义、函数定义或方法签名，必须逐字完整提取到 starter_code，并将不可更改的类名、方法名、参数及返回类型写入 required_signature；若没有模板则两个字段返回空字符串。除代码、变量名和原始输入输出外，所有字段值必须使用简体中文。解题语言为 ${language}。`
-                },
-                ...imageDataList.map(data => ({
-                  type: "image" as const,
-                  source: {
-                    type: "base64" as const,
-                    media_type: "image/png" as const,
-                    data: data
-                  }
-                }))
-              ]
-            }
-          ];
-
-          const response = await this.anthropicClient.messages.create({
-            model: config.extractionModel || "claude-3-7-sonnet-20250219",
-            max_tokens: 4000,
-            messages: messages,
-            temperature: 0.2
-          });
-
-          const responseText = (response.content[0] as { type: 'text', text: string }).text;
-          const jsonText = responseText.replace(/```json|```/g, '').trim();
-          problemInfo = JSON.parse(jsonText);
-        } catch (error: any) {
-          console.error("Error using Anthropic API:", error);
-
-          // Add specific handling for Claude's limitations
-          if (error.status === 429) {
-            return {
-              success: false,
-              error: "Claude API rate limit exceeded. Please wait a few minutes before trying again."
-            };
-          } else if (error.status === 413 || (error.message && error.message.includes("token"))) {
-            return {
-              success: false,
-              error: "Your screenshots contain too much information for Claude to process. Switch to OpenAI or Gemini in settings which can handle larger inputs."
-            };
-          }
-
-          return {
-            success: false,
-            error: "Failed to process with Anthropic API. Please check your API key or try again later."
-          };
-        }
-      }
-      
-      // Update the user on progress
-      if (mainWindow) {
-        mainWindow.webContents.send("processing-status", {
-          message: "Problem analyzed successfully. Preparing to generate solution...",
-          progress: 40
-        });
-      }
-
-      // Store problem info in AppState
-      this.deps.setProblemInfo(problemInfo);
-
-      // Send first success event
-      if (mainWindow) {
-        mainWindow.webContents.send(
-          this.deps.PROCESSING_EVENTS.PROBLEM_EXTRACTED,
-          problemInfo
-        );
-
-        // Generate solutions after successful extraction
-        const solutionsResult = await this.generateSolutionsHelper(signal, userRequest);
-        if (solutionsResult.success) {
-          // Clear any existing extra screenshots before transitioning to solutions view
-          this.screenshotHelper.clearExtraScreenshotQueue();
-          
-          // Final progress update
-          mainWindow.webContents.send("processing-status", {
-            message: "Solution generated successfully",
-            progress: 100
-          });
-          
-          mainWindow.webContents.send(
-            this.deps.PROCESSING_EVENTS.SOLUTION_SUCCESS,
-            solutionsResult.data
-          );
-          return { success: true, data: solutionsResult.data };
-        } else {
-          throw new Error(
-            solutionsResult.error || "Failed to generate solutions"
-          );
-        }
-      }
-
-      return { success: false, error: "Failed to process screenshots" };
-    } catch (error: any) {
-      // If the request was cancelled, don't retry
-      if (axios.isCancel(error)) {
-        return {
-          success: false,
-          error: "Processing was canceled by the user."
-        };
-      }
-      
-      // Handle OpenAI API errors specifically
-      if (error?.response?.status === 401) {
-        return {
-          success: false,
-          error: "Invalid OpenAI API key. Please check your settings."
-        };
-      } else if (error?.response?.status === 429) {
-        return {
-          success: false,
-          error: "OpenAI API rate limit exceeded or insufficient credits. Please try again later."
-        };
-      } else if (error?.response?.status === 500) {
-        return {
-          success: false,
-          error: "OpenAI server error. Please try again later."
-        };
-      }
-
-      console.error("API Error Details:", error);
-      return { 
-        success: false, 
-        error: error.message || "Failed to process screenshots. Please try again." 
-      };
-    }
-  }
-
-  private async generateSolutionsHelper(signal: AbortSignal, userRequest = "") {
-    try {
-      const problemInfo = this.deps.getProblemInfo();
-      const language = await this.getLanguage();
-      const config = configHelper.loadConfig();
-      const mainWindow = this.deps.getMainWindow();
-      const interviewContextPrompt = loadInterviewContextPrompt(
-        config.interviewContextEnabled,
-        config.interviewContextPath
-      )
-      const solutionSystemPrompt = [
-        "你是专业的编程题解答助手。所有解释、思路、标题和代码注释必须使用简体中文；代码语法、变量名和必要的专有名词可以保持原样。请提供清晰、最优且解释充分的解法。",
-        interviewContextPrompt
-      ].filter(Boolean).join("\n\n")
-
-      if (!problemInfo) {
-        throw new Error("No problem info available");
-      }
-
-      // Update progress status
-      if (mainWindow) {
-        mainWindow.webContents.send("processing-status", {
-          message: "Creating optimal solution with detailed explanations...",
-          progress: 60
-        });
-      }
-
-      // Create prompt for solution generation
-      const promptText = `
-请为下面的编程题生成详细解法。
-
-题目描述：
-${problemInfo.problem_statement}
-
-约束条件：
-${problemInfo.constraints || "题目未提供明确的约束条件。"}
-
-示例输入：
-${problemInfo.example_input || "题目未提供示例输入。"}
-
-示例输出：
-${problemInfo.example_output || "题目未提供示例输出。"}
-
-编程语言：${language}
-
-用户本轮补充要求：
-${userRequest.trim() || "无额外要求，请直接完成题目。"}
-
-截图中识别到的平台代码模板：
-${problemInfo.starter_code || "未识别到代码模板"}
-
-必须保持的代码签名：
-${problemInfo.required_signature || "未识别到固定签名"}
-
-模板规则：
-- 如果上方识别到了代码模板，必须严格在该模板基础上续写并返回补全后的完整代码。
-- 必须保留模板的整体结构、类名、方法名、参数顺序、参数类型、返回类型和平台预置代码。
-- 只能补充实现所需的代码，不得把类方法改成裸函数，不得自创 main、输入输出逻辑或更换函数签名。
-- 即使你认为另一种签名更合理，也必须以截图模板为准。
-- 只有在确实没有识别到任何模板时，才可以根据题目自行选择合适的代码结构。
-
-必须严格使用简体中文回答，并采用以下格式：
-1. 基础解法：给出逻辑正确、容易理解但复杂度较高的实现。它不应故意包含错误；允许因为复杂度较高而在大规模数据上超时。代码必须放在第一个 Markdown 代码块中。
-2. 优化解法：给出复杂度更优、完整处理边界情况的实现。代码必须放在第二个 Markdown 代码块中。
-3. 解题思路：用项目符号说明基础解法如何演进为优化解法
-4. 时间复杂度：分别说明基础解法和优化解法的时间复杂度
-5. 空间复杂度：分别说明基础解法和优化解法的空间复杂度
-
-两个代码块都必须遵守上方模板规则。如果截图中有代码模板，两个代码块都必须分别返回基于该模板补全后的完整代码，不能只返回方法体或裸函数。代码注释使用简体中文。
-
-除代码语法、变量名、专有名词及复杂度符号外，不得输出英文说明。解法应高效、注释清晰，并正确处理边界情况。
-`;
-
-      let responseContent;
-      
-      if (
-        this.solutionOpenAIClient ||
-        config.apiProvider === "openai" ||
-        config.apiProvider === "openai-compatible"
-      ) {
-        // OpenAI processing
-        const solutionClient = this.solutionOpenAIClient || this.openaiClient;
-        if (!solutionClient) {
-          return {
-            success: false,
-            error: "Solution API endpoint is not configured. Please check your settings."
-          };
-        }
-        
-        // Stream solution tokens so the renderer can display the answer while
-        // the model is still generating it. Problem extraction remains
-        // non-streaming because it must be parsed as one complete JSON object.
-        const solutionRequest: DeepSeekStreamingRequest = {
-          model: config.solutionModel || "gpt-4o",
-          messages: [
-            { role: "system", content: solutionSystemPrompt },
-            { role: "user", content: promptText }
-          ],
-          max_tokens: this.solutionOpenAIClient || config.apiProvider === "openai-compatible" ? 32768 : 4000,
-          temperature: 0.2,
-          stream: true
-        }
-        const solutionEndpoint = this.solutionOpenAIClient
-          ? config.solutionBaseURL
-          : config.baseURL
-        if (isOfficialDeepSeekEndpoint(solutionEndpoint)) {
-          solutionRequest.thinking = { type: "enabled" }
-          solutionRequest.reasoning_effort = "low"
-        }
-        const solutionStream = await solutionClient.chat.completions.create(
-          solutionRequest,
-          { signal }
-        );
-
-        responseContent = "";
-        let reasoningLength = 0;
-        let finishReason = "unknown";
-        let lastStreamUpdate = 0;
-
-        mainWindow?.webContents.send("solution-stream", {
-          content: "",
-          isThinking: true,
-          done: false
-        });
-
-        for await (const chunk of solutionStream) {
-          const choice = chunk.choices[0];
-          const delta = choice?.delta as {
-            content?: string | null;
-            reasoning_content?: string | null;
-          } | undefined;
-
-          if (choice?.finish_reason) {
-            finishReason = choice.finish_reason;
-          }
-          if (delta?.reasoning_content) {
-            reasoningLength += delta.reasoning_content.length;
-          }
-          if (delta?.content) {
-            responseContent += delta.content;
-          }
-
-          // Limit IPC/React updates to about 20 FPS while preserving every
-          // token in the accumulated content.
-          const now = Date.now();
-          if (now - lastStreamUpdate >= 50) {
-            mainWindow?.webContents.send("solution-stream", {
-              content: responseContent,
-              isThinking: responseContent.length === 0 && reasoningLength > 0,
-              done: false
-            });
-            lastStreamUpdate = now;
-          }
-        }
-
-        mainWindow?.webContents.send("solution-stream", {
-          content: responseContent,
-          isThinking: false,
-          done: true
-        });
-
-        if (!responseContent?.trim()) {
-          throw new Error(`模型完成了思考但没有返回最终解答（finish_reason=${finishReason}, reasoning_length=${reasoningLength}）。请提高服务端最大输出长度。`);
-        }
-      } else if (config.apiProvider === "gemini")  {
-        // Gemini processing
-        if (!this.geminiApiKey) {
-          return {
-            success: false,
-            error: "Gemini API key not configured. Please check your settings."
-          };
-        }
-        
-        try {
-          // Create Gemini message structure
-          const geminiMessages = [
-            {
-              role: "user",
-              parts: [
-                {
-                  text: `你是专业的编程题解答助手。必须全程使用简体中文提供清晰、最优且解释充分的解法。\n\n${promptText}`
-                }
-              ]
-            }
-          ];
-
-          // Make API request to Gemini
-          const response = await axios.default.post(
-            `https://generativelanguage.googleapis.com/v1beta/models/${config.solutionModel || "gemini-2.0-flash"}:generateContent?key=${this.geminiApiKey}`,
-            {
-              contents: geminiMessages,
-              systemInstruction: {
-                parts: [{ text: solutionSystemPrompt }]
-              },
-              generationConfig: {
-                temperature: 0.2,
-                maxOutputTokens: 4000
-              }
-            },
-            { signal }
-          );
-
-          const responseData = response.data as GeminiResponse;
-          
-          if (!responseData.candidates || responseData.candidates.length === 0) {
-            throw new Error("Empty response from Gemini API");
-          }
-          
-          responseContent = responseData.candidates[0].content.parts[0].text;
-        } catch (error) {
-          console.error("Error using Gemini API for solution:", error);
-          return {
-            success: false,
-            error: "Failed to generate solution with Gemini API. Please check your API key or try again later."
-          };
-        }
-      } else if (config.apiProvider === "anthropic") {
-        // Anthropic processing
-        if (!this.anthropicClient) {
-          return {
-            success: false,
-            error: "Anthropic API key not configured. Please check your settings."
-          };
-        }
-        
-        try {
-          const messages = [
-            {
-              role: "user" as const,
-              content: [
-                {
-                  type: "text" as const,
-                  text: `你是专业的编程题解答助手。必须全程使用简体中文提供清晰、最优且解释充分的解法。\n\n${promptText}`
-                }
-              ]
-            }
-          ];
-
-          // Send to Anthropic API
-          const response = await this.anthropicClient.messages.create({
-            model: config.solutionModel || "claude-3-7-sonnet-20250219",
-            max_tokens: 4000,
-            system: solutionSystemPrompt,
-            messages: messages,
-            temperature: 0.2
-          });
-
-          responseContent = (response.content[0] as { type: 'text', text: string }).text;
-        } catch (error: any) {
-          console.error("Error using Anthropic API for solution:", error);
-
-          // Add specific handling for Claude's limitations
-          if (error.status === 429) {
-            return {
-              success: false,
-              error: "Claude API rate limit exceeded. Please wait a few minutes before trying again."
-            };
-          } else if (error.status === 413 || (error.message && error.message.includes("token"))) {
-            return {
-              success: false,
-              error: "Your screenshots contain too much information for Claude to process. Switch to OpenAI or Gemini in settings which can handle larger inputs."
-            };
-          }
-
-          return {
-            success: false,
-            error: "Failed to generate solution with Anthropic API. Please check your API key or try again later."
-          };
-        }
-      }
-      
-      // Extract parts from the response
-      const codeBlocks = Array.from(responseContent.matchAll(/```(?:\w+)?\s*([\s\S]*?)```/g))
-        .map((match) => match[1].trim())
-        .filter(Boolean);
-      const basicCode = codeBlocks.length >= 2 ? codeBlocks[0] : "";
-      const code = codeBlocks.length >= 2
-        ? codeBlocks[1]
-        : codeBlocks[0] || responseContent;
-      
-      // Extract thoughts, looking for bullet points or numbered lists
-      const thoughtsRegex = /(?:解题思路|思路|关键洞察|推理过程|Thoughts|Key Insights|Reasoning|Approach)\s*[:：]?\s*([\s\S]*?)(?=\n\s*(?:#{1,6}\s*)?(?:\d+\.\s*)?(?:时间复杂度|Time complexity)\s*[:：]?|$)/i;
-      const thoughtsMatch = responseContent.match(thoughtsRegex);
-      let thoughts: string[] = [];
-      
-      if (thoughtsMatch && thoughtsMatch[1]) {
-        // Extract bullet points or numbered items
-        const bulletPoints = thoughtsMatch[1].match(/(?:^|\n)\s*(?:[-*•]|\d+\.)\s*(.*)/g);
-        if (bulletPoints) {
-          thoughts = bulletPoints.map(point => 
-            point.replace(/^\s*(?:[-*•]|\d+\.)\s*/, '').trim()
-          ).filter(Boolean);
-        } else {
-          // If no bullet points found, split by newlines and filter empty lines
-          thoughts = thoughtsMatch[1].split('\n')
-            .map((line) => line.trim())
-            .filter(Boolean);
-        }
-      }
-      
-      // Extract complexity information
-      const timeComplexityPattern = /(?:时间复杂度|Time complexity)\s*[:：]?\s*([^\n]+(?:\n[^\n]+)*?)(?=\n\s*(?:#{1,6}\s*)?(?:\d+\.\s*)?(?:空间复杂度|Space complexity)|$)/i;
-      const spaceComplexityPattern = /(?:空间复杂度|Space complexity)\s*[:：]?\s*([\s\S]*?)\s*$/i;
-      
-      let timeComplexity = "O(n) - 线性时间复杂度，因为只需遍历输入一次，每个元素只会被处理一次。";
-      let spaceComplexity = "O(n) - 线性空间复杂度，因为最坏情况下需要存储与输入规模成正比的辅助数据。";
-      
-      const timeMatch = responseContent.match(timeComplexityPattern);
-      if (timeMatch && timeMatch[1]) {
-        timeComplexity = timeMatch[1].trim();
-        if (!timeComplexity.match(/O\([^)]+\)/i)) {
-          timeComplexity = `O(n) - ${timeComplexity}`;
-        } else if (!timeComplexity.includes('-') && !timeComplexity.includes('because') && !timeComplexity.includes('因为')) {
-          const notationMatch = timeComplexity.match(/O\([^)]+\)/i);
-          if (notationMatch) {
-            const notation = notationMatch[0];
-            const rest = timeComplexity.replace(notation, '').trim();
-            timeComplexity = `${notation} - ${rest}`;
-          }
-        }
-      }
-      
-      const spaceMatch = responseContent.match(spaceComplexityPattern);
-      if (spaceMatch && spaceMatch[1]) {
-        spaceComplexity = spaceMatch[1].trim();
-        if (!spaceComplexity.match(/O\([^)]+\)/i)) {
-          spaceComplexity = `O(n) - ${spaceComplexity}`;
-        } else if (!spaceComplexity.includes('-') && !spaceComplexity.includes('because') && !spaceComplexity.includes('因为')) {
-          const notationMatch = spaceComplexity.match(/O\([^)]+\)/i);
-          if (notationMatch) {
-            const notation = notationMatch[0];
-            const rest = spaceComplexity.replace(notation, '').trim();
-            spaceComplexity = `${notation} - ${rest}`;
-          }
-        }
-      }
-
-      const formattedResponse = {
-        basic_code: basicCode,
-        code: code,
-        thoughts: thoughts.length > 0 ? thoughts : ["基于效率、正确性和可读性设计解题方案"],
-        time_complexity: timeComplexity,
-        space_complexity: spaceComplexity
-      };
-
-      this.setCurrentBasicCode(basicCode);
-      this.setCurrentSolutionCode(code);
-
-      return { success: true, data: formattedResponse };
-    } catch (error: any) {
-      if (axios.isCancel(error)) {
-        return {
-          success: false,
-          error: "Processing was canceled by the user."
-        };
-      }
-      
-      if (error?.response?.status === 401) {
-        return {
-          success: false,
-          error: "Invalid OpenAI API key. Please check your settings."
-        };
-      } else if (error?.response?.status === 429) {
-        return {
-          success: false,
-          error: "OpenAI API rate limit exceeded or insufficient credits. Please try again later."
-        };
-      }
-      
-      console.error("Solution generation error:", error);
-      return { success: false, error: error.message || "Failed to generate solution" };
     }
   }
 
@@ -1816,58 +1087,69 @@ ${content}
         const client = this.solutionOpenAIClient || this.openaiClient
         if (!client) throw new Error("解答模型尚未配置")
 
-        const chatRequest: DeepSeekStreamingRequest = {
+        const chatEndpoint = this.solutionOpenAIClient
+          ? config.solutionBaseURL
+          : config.baseURL
+        const useStreaming = isDeepSeekStreaming(config, chatEndpoint)
+        const thinkingOptions = isOfficialDeepSeekEndpoint(chatEndpoint)
+          ? { thinking: { type: "enabled" as const }, reasoning_effort: "low" as const }
+          : {}
+        const chatMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+          { role: "system", content: chatSystemPrompt },
+          ...priorMessages,
+          { role: "user", content: contextPrompt }
+        ]
+        const chatParams = {
             model: config.solutionModel || "gpt-4o",
-            messages: [
-              {
-                role: "system",
-                content: chatSystemPrompt
-              },
-              ...priorMessages,
-              { role: "user", content: contextPrompt }
-            ],
+            messages: chatMessages,
             temperature: 0.2,
             max_tokens:
               this.solutionOpenAIClient || config.apiProvider === "openai-compatible"
                 ? 32768
                 : 4000,
+            ...thinkingOptions
+          }
+
+        if (useStreaming) {
+          const chatRequest: DeepSeekStreamingRequest = {
+            ...chatParams,
             stream: true
           }
-        const chatEndpoint = this.solutionOpenAIClient
-          ? config.solutionBaseURL
-          : config.baseURL
-        if (isOfficialDeepSeekEndpoint(chatEndpoint)) {
-          chatRequest.thinking = { type: "enabled" }
-          chatRequest.reasoning_effort = "low"
-        }
-        const stream = await client.chat.completions.create(
-          chatRequest,
-          { signal: controller.signal }
-        )
+          const stream = await client.chat.completions.create(
+            chatRequest,
+            { signal: controller.signal }
+          )
 
-        mainWindow.webContents.send("processing-status", {
-          stage: "followup",
-          requestId,
-          message: "已连接，正在接收回答...",
-          progress: 40
-        })
+          mainWindow.webContents.send("processing-status", {
+            stage: "followup",
+            requestId,
+            message: "已连接，正在接收回答...",
+            progress: 40
+          })
 
-        let lastUpdate = 0
-        for await (const chunk of stream) {
-          const delta = chunk.choices[0]?.delta as
-            | { content?: string | null }
-            | undefined
-          if (delta?.content) responseContent += delta.content
+          let lastUpdate = 0
+          for await (const chunk of stream) {
+            const delta = chunk.choices[0]?.delta as
+              | { content?: string | null }
+              | undefined
+            if (delta?.content) responseContent += delta.content
 
-          const now = Date.now()
-          if (now - lastUpdate >= 50 && responseContent) {
-            mainWindow.webContents.send("chat-stream", {
-              requestId,
-              content: responseContent,
-              done: false
-            })
-            lastUpdate = now
+            const now = Date.now()
+            if (now - lastUpdate >= 50 && responseContent) {
+              mainWindow.webContents.send("chat-stream", {
+                requestId,
+                content: responseContent,
+                done: false
+              })
+              lastUpdate = now
+            }
           }
+        } else {
+          const response = await client.chat.completions.create(
+            { ...chatParams } as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
+            { signal: controller.signal }
+          )
+          responseContent = response.choices[0]?.message?.content?.trim() || ""
         }
       } else if (config.apiProvider === "gemini") {
         if (!this.geminiApiKey) throw new Error("Gemini API key 尚未配置")

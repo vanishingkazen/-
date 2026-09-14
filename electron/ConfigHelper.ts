@@ -19,6 +19,7 @@ export interface Config {
   solutionBaseURL: string;
   solutionModel: string;
   debuggingModel: string;
+  streamingEnabled: boolean;
   speechApiKey: string;
   speechWorkspaceId: string;
   speechRegion: string;
@@ -41,6 +42,7 @@ export class ConfigHelper extends EventEmitter {
     solutionBaseURL: "",
     solutionModel: "gemini-2.0-flash",
     debuggingModel: "gemini-2.0-flash",
+    streamingEnabled: true,
     speechApiKey: "",
     speechWorkspaceId: "",
     speechRegion: "cn-beijing",
@@ -55,36 +57,52 @@ export class ConfigHelper extends EventEmitter {
     super();
     // Use the app's user data directory to store the config
     try {
-      this.configPath = path.join(app.getPath('userData'), 'config.json');
-      const legacyConfigPath = path.join(
-        app.getPath('appData'),
-        'interview-coder-v1',
-        'config.json'
-      );
+      const appDataPath = app.getPath('appData')
 
-      // Preserve the user's existing endpoint settings after the application
-      // rename. Migrate only when the new config has no API key.
-      let shouldMigrateLegacyConfig = !fs.existsSync(this.configPath);
-      if (!shouldMigrateLegacyConfig) {
+      // Keep the same config regardless of how Electron resolves userData in
+      // development, production source runs, and packaged builds.
+      this.configPath = path.join(appDataPath, 'steamgamecode', 'config.json')
+
+      const legacyConfigPaths = [
+        path.join(appDataPath, 'interview-coder-v1', 'config.json'),
+        // Older source runs that resolved userData before app.setName() used
+        // the generic Electron directory.
+        path.join(appDataPath, 'Electron', 'config.json')
+      ]
+
+      const readApiKey = (candidatePath: string): string => {
         try {
-          const currentConfig = JSON.parse(
-            fs.readFileSync(this.configPath, 'utf8')
-          );
-          shouldMigrateLegacyConfig = !currentConfig.apiKey;
+          const candidate = JSON.parse(fs.readFileSync(candidatePath, 'utf8'))
+          return typeof candidate.apiKey === 'string' ? candidate.apiKey.trim() : ''
         } catch {
-          shouldMigrateLegacyConfig = true;
+          return ''
         }
       }
 
-      if (shouldMigrateLegacyConfig && fs.existsSync(legacyConfigPath)) {
-        fs.mkdirSync(path.dirname(this.configPath), { recursive: true });
-        fs.copyFileSync(legacyConfigPath, this.configPath);
-        console.log('Migrated legacy API configuration to steamgamecode');
+      // Preserve endpoint settings from old locations only when the stable
+      // config is missing or has no API key.
+      let shouldMigrateLegacyConfig = !fs.existsSync(this.configPath)
+      if (!shouldMigrateLegacyConfig) {
+        shouldMigrateLegacyConfig = !readApiKey(this.configPath)
       }
-      console.log('Config path:', this.configPath);
+
+      if (shouldMigrateLegacyConfig) {
+        const legacyConfigPath = legacyConfigPaths
+          .filter((candidatePath) => fs.existsSync(candidatePath))
+          .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)
+          .find((candidatePath) => Boolean(readApiKey(candidatePath)))
+
+        if (legacyConfigPath) {
+          fs.mkdirSync(path.dirname(this.configPath), { recursive: true })
+          fs.copyFileSync(legacyConfigPath, this.configPath)
+          console.log(`Migrated legacy API configuration from ${legacyConfigPath}`)
+        }
+      }
+
+      console.log('Config path:', this.configPath)
     } catch (err) {
-      console.warn('Could not access user data path, using fallback');
-      this.configPath = path.join(process.cwd(), 'config.json');
+      console.warn('Could not access user data path, using fallback')
+      this.configPath = path.join(process.cwd(), 'config.json')
     }
     
     // Ensure the initial config file exists
@@ -267,7 +285,8 @@ export class ConfigHelper extends EventEmitter {
       if (updates.questionMode !== undefined || updates.apiKey !== undefined || updates.apiProvider !== undefined || updates.baseURL !== undefined ||
           updates.extractionModel !== undefined || updates.solutionApiKey !== undefined ||
           updates.solutionBaseURL !== undefined || updates.solutionModel !== undefined ||
-          updates.debuggingModel !== undefined || updates.language !== undefined ||
+          updates.debuggingModel !== undefined || updates.streamingEnabled !== undefined ||
+          updates.language !== undefined ||
           updates.speechApiKey !== undefined || updates.speechWorkspaceId !== undefined ||
           updates.speechRegion !== undefined || updates.speechModel !== undefined) {
         this.emit('config-updated', newConfig);

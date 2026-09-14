@@ -17,7 +17,7 @@ export default defineConfig({
             sourcemap: true,
             minify: false,
             rollupOptions: {
-              external: ["electron"]
+              external: ["electron", "uiohook-napi"]
             }
           }
         }

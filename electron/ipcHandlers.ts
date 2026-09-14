@@ -17,7 +17,31 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
   })
 
   ipcMain.handle("update-config", (_event, updates) => {
-    return configHelper.updateConfig(updates);
+    const newConfig = configHelper.updateConfig(updates)
+
+    if (typeof updates?.opacity === "number") {
+      const mainWindow = deps.getMainWindow()
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.setOpacity(newConfig.opacity)
+      }
+    }
+
+    return newConfig
+  })
+
+  ipcMain.handle("set-opacity", (_event, opacity: unknown) => {
+    const numericOpacity = typeof opacity === "number" && Number.isFinite(opacity)
+      ? opacity
+      : 1
+    const value = Math.min(1, Math.max(0.1, numericOpacity))
+    const mainWindow = deps.getMainWindow()
+
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return { success: false, opacity: value, error: "Main window not available" }
+    }
+
+    mainWindow.setOpacity(value)
+    return { success: true, opacity: value }
   })
 
   ipcMain.handle("interview-context-status", () => {

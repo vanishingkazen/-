@@ -16,7 +16,7 @@ import {
 } from "lucide-react"
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { PrismLight as SyntaxHighlighter } from "react-syntax-highlighter"
-import { dracula } from "react-syntax-highlighter/dist/esm/styles/prism"
+import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism"
 import python from "react-syntax-highlighter/dist/esm/languages/prism/python"
 import javascript from "react-syntax-highlighter/dist/esm/languages/prism/javascript"
 import typescript from "react-syntax-highlighter/dist/esm/languages/prism/typescript"
@@ -58,8 +58,6 @@ interface AudioCaptureChain {
 }
 
 type VoiceSource = "microphone" | "system"
-type QuestionMode = "coding" | "iq"
-
 interface VoiceConversation {
   systemTranscript: string
   microphoneTranscript: string
@@ -196,7 +194,7 @@ function MessageContent({ content, currentLanguage }: { content: string; current
           </div>
           <SyntaxHighlighter
             language={highlightedLanguage}
-            style={dracula}
+            style={oneLight}
             showLineNumbers
             wrapLongLines
             customStyle={{
@@ -264,15 +262,12 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
   const [microphoneVoiceStatus, setMicrophoneVoiceStatus] = useState("")
   const [microphoneVoicePartial, setMicrophoneVoicePartial] = useState("")
   const [microphoneVoiceTranscript, setMicrophoneVoiceTranscript] = useState("")
-  const [questionMode, setQuestionMode] = useState<QuestionMode>("coding")
-  const [questionModeBusy, setQuestionModeBusy] = useState(false)
   const [interviewContextEnabled, setInterviewContextEnabled] = useState(false)
   const [interviewContextAvailable, setInterviewContextAvailable] = useState(false)
   const [interviewContextPath, setInterviewContextPath] = useState("")
   const [interviewContextCharacters, setInterviewContextCharacters] = useState(0)
   const [interviewContextBusy, setInterviewContextBusy] = useState(false)
   const activeAssistantId = useRef<string | null>(null)
-  const extractionAssistantId = useRef<string | null>(null)
   const pendingUserMessage = useRef(false)
   const attachmentsRef = useRef<ScreenshotAttachment[]>([])
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -488,10 +483,24 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
     attachmentsRef.current = attachments
   }, [attachments])
 
+  const removeLastAttachment = useCallback(async () => {
+    const lastAttachment = attachmentsRef.current[attachmentsRef.current.length - 1]
+    if (!lastAttachment) return
+
+    const result = await window.electronAPI.deleteScreenshot(lastAttachment.path)
+    if (!result.success) {
+      showToast("删除截图失败", result.error || "无法删除最后一张截图", "error")
+      return
+    }
+
+    setAttachments((current) =>
+      current.filter((entry) => entry.path !== lastAttachment.path)
+    )
+  }, [showToast])
+
   useEffect(() => {
-    void window.electronAPI.getConfig().then((config) => {
-      setQuestionMode(config.questionMode || "coding")
-      setSessionTitle(config.questionMode === "iq" ? "新建 IQ 解题会话" : "新建解题会话")
+    void window.electronAPI.getConfig().then(() => {
+      setSessionTitle("新建解题会话")
     })
     void window.electronAPI.getInterviewContextStatus().then((status) => {
       setInterviewContextEnabled(status.enabled && status.available)
@@ -500,29 +509,6 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
       setInterviewContextCharacters(status.characterCount)
     })
   }, [])
-
-  const selectQuestionMode = useCallback(async (mode: QuestionMode) => {
-    if (busy || questionModeBusy || mode === questionMode) return
-    setQuestionModeBusy(true)
-    try {
-      const result = await window.electronAPI.updateConfig({ questionMode: mode })
-      if (!result) throw new Error("配置保存失败")
-      setQuestionMode(mode)
-      setSessionTitle(mode === "iq" ? "新建 IQ 解题会话" : "新建解题会话")
-      showToast(
-        mode === "iq" ? "已切换到 IQ 测评" : "已切换到编程题",
-        mode === "iq"
-          ? "提交截图时将直接调用视觉模型解题"
-          : "提交截图时将执行编程题识别与代码生成流程",
-        "neutral"
-      )
-    } catch (error) {
-      console.error("Failed to update question mode:", error)
-      showToast("切换失败", "无法保存题目模式", "error")
-    } finally {
-      setQuestionModeBusy(false)
-    }
-  }, [busy, questionMode, questionModeBusy, showToast])
 
   const toggleInterviewContext = useCallback(async () => {
     if (interviewContextBusy || busy) return
@@ -604,6 +590,9 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
       window.electronAPI.onFocusChatInput(() => {
         inputRef.current?.focus()
       }),
+      window.electronAPI.onDeleteLastScreenshot(() => {
+        void removeLastAttachment()
+      }),
       window.electronAPI.onScrollChat(({ direction }) => {
         scrollRef.current?.scrollBy({
           top: direction === "up" ? -120 : 120,
@@ -651,11 +640,9 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
           { id: requestId, role: "assistant", content: "", streaming: true, stage: "追问" }
         ])
       }),
-      window.electronAPI.onSolutionStart((data?: { questionMode?: "coding" | "iq" }) => {
-        const isIqMode = data?.questionMode === "iq"
-        setQuestionMode(isIqMode ? "iq" : "coding")
+      window.electronAPI.onSolutionStart(() => {
         setBusy(true)
-        setPhase(isIqMode ? "正在使用视觉模型解答 IQ 题目..." : "正在识别截图中的题目...")
+        setPhase("正在使用视觉模型直接解题...")
         setProgress(15)
         if (!pendingUserMessage.current) {
           setMessages((current) => [
@@ -672,33 +659,17 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
         pendingUserMessage.current = false
         const hasExistingAssistant = Boolean(activeAssistantId.current)
         const id = activeAssistantId.current || createId("assistant")
-        extractionAssistantId.current = id
         activeAssistantId.current = id
         if (!hasExistingAssistant) {
           setMessages((current) => [
             ...current,
-            { id, role: "assistant", content: "", streaming: true, stage: isIqMode ? "IQ 视觉解题" : "题目提取" }
+            { id, role: "assistant", content: "", streaming: true, stage: "视觉解题" }
           ])
         } else {
           setMessages((current) => current.map((message) =>
-            message.id === id ? { ...message, stage: isIqMode ? "IQ 视觉解题" : "题目提取" } : message
+            message.id === id ? { ...message, stage: "视觉解题" } : message
           ))
         }
-      }),
-      window.electronAPI.onProblemExtracted((problem) => {
-        setSessionTitle(problem?.problem_statement?.split("\n")[0]?.slice(0, 48) || "编程题解答")
-        setPhase("题目识别完成，正在连接解答模型...")
-        setProgress(45)
-        const extractionId = extractionAssistantId.current || activeAssistantId.current
-        if (extractionId) updateAssistant(extractionId, formatProblem(problem), false)
-        extractionAssistantId.current = null
-
-        const solutionId = createId("assistant")
-        activeAssistantId.current = solutionId
-        setMessages((current) => [
-          ...current,
-          { id: solutionId, role: "assistant", content: "", streaming: true, stage: "解答" }
-        ])
       }),
       window.electronAPI.onProcessingStatus((status) => {
         setPhase(status.message)
@@ -723,7 +694,6 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
           )
         )
         activeAssistantId.current = null
-        extractionAssistantId.current = null
         setBusy(false)
         setPhase("")
         setProgress(0)
@@ -733,7 +703,6 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
         const id = activeAssistantId.current
         if (id) updateAssistant(id, error, false)
         activeAssistantId.current = null
-        extractionAssistantId.current = null
         setBusy(false)
         setPhase("")
       }),
@@ -751,7 +720,6 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
         const id = activeAssistantId.current
         if (id) updateAssistant(id, data.debug_analysis || data.code || "调试完成", false)
         activeAssistantId.current = null
-        extractionAssistantId.current = null
         setBusy(false)
         setPhase("")
         setAttachments([])
@@ -760,7 +728,6 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
         const id = activeAssistantId.current
         if (id) updateAssistant(id, error, false)
         activeAssistantId.current = null
-        extractionAssistantId.current = null
         setBusy(false)
         setPhase("")
       }),
@@ -789,15 +756,14 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
         setSystemVoicePartial("")
         setMicrophoneVoiceTranscript("")
         setMicrophoneVoicePartial("")
-        setSessionTitle(questionMode === "iq" ? "新建 IQ 解题会话" : "新建解题会话")
+        setSessionTitle("新建解题会话")
         setBusy(false)
         setPhase("")
         activeAssistantId.current = null
-        extractionAssistantId.current = null
       })
     ]
     return () => cleanups.forEach((cleanup) => cleanup())
-  }, [questionMode, releaseVoiceCapture, toggleVoiceInput, updateAssistant])
+  }, [releaseVoiceCapture, removeLastAttachment, toggleVoiceInput, updateAssistant])
 
   useEffect(() => () => {
     releaseVoiceCapture()
@@ -840,6 +806,7 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
     const text = input.trim()
     if (busy || (!text && attachments.length === 0)) return
 
+    const requestAttachments = [...attachments]
     const visibleText = text || "请分析这些截图并给出解答。"
     const assistantId = createId("assistant")
     activeAssistantId.current = assistantId
@@ -850,17 +817,19 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
         id: createId("user"),
         role: "user",
         content: visibleText,
-        images: attachments.length ? [...attachments] : undefined,
-        stage: attachments.length ? "提交截图" : undefined
+        images: requestAttachments.length ? requestAttachments : undefined,
+        stage: requestAttachments.length ? "提交截图" : undefined
       },
-      { id: assistantId, role: "assistant", content: "", streaming: true, stage: attachments.length ? undefined : "追问" }
+      { id: assistantId, role: "assistant", content: "", streaming: true, stage: requestAttachments.length ? undefined : "追问" }
     ])
     setInput("")
+    if (requestAttachments.length > 0) setAttachments([])
     setBusy(true)
 
-    if (attachments.length > 0) {
+    if (requestAttachments.length > 0) {
       const result = await window.electronAPI.triggerProcessScreenshots(text)
       if (!result.success) {
+        setAttachments(requestAttachments)
         updateAssistant(assistantId, result.error || "截图处理失败", false)
         setBusy(false)
       }
@@ -879,24 +848,30 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
     }
   }
 
-  const newSession = async () => {
+  const newSession = useCallback(async () => {
     await window.electronAPI.triggerReset()
     setMessages([])
     setInput("")
     setAttachments([])
-    setSessionTitle(questionMode === "iq" ? "新建 IQ 解题会话" : "新建解题会话")
+    setSessionTitle("新建解题会话")
     window.setTimeout(() => inputRef.current?.focus(), 0)
-  }
+  }, [])
+
+  useEffect(() => {
+    return window.electronAPI.onNewChatSession(() => {
+      void newSession()
+    })
+  }, [newSession])
 
   return (
     <main className="pandora-chat-shell">
       <header className="pandora-chat-header">
         <div className="min-w-0">
-          <div className="flex items-center gap-2 text-[13px] font-medium text-white/90">
-            <Code2 size={15} className="text-white/55" />
+          <div className="flex items-center gap-2 text-[13px] font-medium text-black/80">
+            <Code2 size={15} className="text-black/[0.55]" />
             <span className="truncate">{sessionTitle}</span>
           </div>
-          <div className="mt-0.5 text-[10px] text-white/35">快捷键优先 · Ctrl/Cmd + H 截图 · Ctrl/Cmd + Enter 按内置规则执行</div>
+          <div className="mt-0.5 text-[10px] text-black/[0.35]">快捷键优先 · Ctrl/Cmd + H 截图 · Ctrl/Cmd + Enter 按内置规则执行</div>
         </div>
         <div className="flex items-center gap-1">
           <div className="relative">
@@ -947,15 +922,14 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
         {messages.length === 0 && !busy ? (
           <div className="chat-empty-state">
             <div className="chat-empty-icon"><Code2 size={25} /></div>
-            <h1>{questionMode === "iq" ? "截取完整 IQ 题干和选项" : "从截图开始，或者直接输入问题"}</h1>
-            <p>{questionMode === "iq"
-              ? "当前为 IQ 测评模式：截图会直接发送给视觉模型，不会进入代码生成流程。"
-              : "当前为编程题模式：截图将经过题目识别、代码生成与复杂度分析。"}</p>
+            <h1>从截图开始，或者直接输入问题</h1>
+            <p>截图会直接发送给视觉模型，由模型判断题型和语言并完成解题。</p>
             <div className="chat-empty-shortcuts">
               <span><kbd>Ctrl H</kbd> 截图</span>
               <span><kbd>Ctrl Enter</kbd> 执行当前阶段</span>
               <span><kbd>Ctrl R</kbd> 重置</span>
-              <span><kbd>Ctrl B</kbd> 显示/隐藏</span>
+              <span><kbd>/</kbd> 或快速晃动鼠标 4 次</span>
+              <span><kbd>Cmd N</kbd> 新建会话（macOS）</span>
               <span><kbd>Ctrl L</kbd> 删除末张截图</span>
             </div>
           </div>
@@ -969,12 +943,12 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
                 </div>
                 {message.images?.length ? (
                   <div className="mb-2 flex flex-wrap gap-2">
-                    {message.images.map((item) => <img key={item.path} src={item.preview} className="h-20 w-28 rounded-md border border-white/10 object-cover" />)}
+                    {message.images.map((item) => <img key={item.path} src={item.preview} className="h-20 w-28 rounded-md border border-black/10 object-cover" />)}
                   </div>
                 ) : null}
                 {message.content ? <MessageContent content={message.content} currentLanguage={currentLanguage} /> : null}
                 {message.streaming && !message.content ? (
-                  <div className="flex items-center gap-2 text-xs text-white/45"><LoaderCircle size={13} className="animate-spin" />等待首个正文...</div>
+                  <div className="flex items-center gap-2 text-xs text-black/[0.45]"><LoaderCircle size={13} className="animate-spin" />等待首个正文...</div>
                 ) : null}
               </article>
             ))}
@@ -1051,26 +1025,6 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
               <button className={`chat-tool-button ${voiceActive ? "voice-active" : ""}`} onClick={toggleVoiceInput} title={`${voiceActive ? "停止" : "开始"}扬声器与麦克风双声道识别（Ctrl/Cmd + Shift + M）`}>
                 {voiceActive ? <MicOff size={15} /> : <Mic size={15} />}<span>{voiceActive ? "停止" : "扬声器+麦克风"}</span>
               </button>
-              <div className="question-mode-switch" role="group" aria-label="题目模式">
-                <button
-                  type="button"
-                  className={questionMode === "coding" ? "active" : ""}
-                  disabled={busy || questionModeBusy}
-                  onClick={() => void selectQuestionMode("coding")}
-                  title="截图后识别编程题并生成代码"
-                >
-                  编程题
-                </button>
-                <button
-                  type="button"
-                  className={questionMode === "iq" ? "active" : ""}
-                  disabled={busy || questionModeBusy}
-                  onClick={() => void selectQuestionMode("iq")}
-                  title="截图后直接使用视觉模型解答 IQ 题"
-                >
-                  IQ 测评
-                </button>
-              </div>
               <button
                 className={`interview-context-toggle ${interviewContextEnabled ? "enabled" : ""}`}
                 type="button"
@@ -1087,7 +1041,7 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
                 </span>
                 <span>{interviewContextEnabled ? "面试上下文" : "无上下文"}</span>
               </button>
-              {messages.length > 0 && <span className="ml-1 text-[10px] text-white/25">Shift + Enter 换行</span>}
+              {messages.length > 0 && <span className="ml-1 text-[10px] text-black/25">Shift + Enter 换行</span>}
             </div>
             {busy ? (
               <button className="chat-send-button stop" onClick={() => window.electronAPI.cancelChat()} title="停止">

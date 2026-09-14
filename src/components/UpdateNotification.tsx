@@ -60,7 +60,7 @@ export const UpdateNotification: React.FC = () => {
   return (
     <Dialog open={true}>
       <DialogContent
-        className="bg-black/90 text-white border-white/20"
+        className="bg-white/[0.90] text-black border-black/15"
         onPointerDownOutside={(e) => e.preventDefault()}
       >
         <div className="p-4">
@@ -69,7 +69,7 @@ export const UpdateNotification: React.FC = () => {
               ? "Update Ready to Install"
               : "A New Version is Available"}
           </h2>
-          <p className="text-sm text-white/70 mb-6">
+          <p className="text-sm text-black/65 mb-6">
             {updateDownloaded
               ? "The update has been downloaded and will be installed when you restart the app."
               : "A new version of steamgamecode is available. Please update to continue using the app."}
@@ -79,7 +79,7 @@ export const UpdateNotification: React.FC = () => {
               <Button
                 variant="outline"
                 onClick={handleInstallUpdate}
-                className="border-white/20 hover:bg-white/10"
+                className="border-black/20 text-black hover:bg-black/[0.06]"
               >
                 Restart and Install
               </Button>
@@ -88,7 +88,7 @@ export const UpdateNotification: React.FC = () => {
                 variant="outline"
                 onClick={handleStartUpdate}
                 disabled={isDownloading}
-                className="border-white/20 hover:bg-white/10"
+                className="border-black/20 text-black hover:bg-black/[0.06]"
               >
                 {isDownloading ? "Downloading..." : "Download Update"}
               </Button>

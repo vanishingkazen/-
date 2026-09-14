@@ -61,8 +61,8 @@ export function HistoryDialog({ open, onOpenChange }: HistoryDialogProps) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl bg-zinc-950 border border-white/15 text-white p-0 overflow-hidden">
-        <DialogHeader className="px-5 pt-5 pb-3 mb-0 border-b border-white/10">
+      <DialogContent className="max-w-2xl bg-white/[0.90] border border-black/15 text-black backdrop-blur-xl p-0 overflow-hidden">
+        <DialogHeader className="px-5 pt-5 pb-3 mb-0 border-b border-black/10">
           <DialogTitle>解题历史</DialogTitle>
           <DialogDescription>
             题目和解答会一直保留；相关截图仅保留最近 3 天。
@@ -71,21 +71,21 @@ export function HistoryDialog({ open, onOpenChange }: HistoryDialogProps) {
 
         <div className="max-h-[62vh] overflow-y-auto p-3 space-y-2">
           {loading ? (
-            <div className="py-12 text-center text-sm text-white/60">正在读取…</div>
+            <div className="py-12 text-center text-sm text-black/60">正在读取…</div>
           ) : records.length === 0 ? (
-            <div className="py-12 text-center text-sm text-white/60">暂无历史记录</div>
+            <div className="py-12 text-center text-sm text-black/60">暂无历史记录</div>
           ) : (
             records.map((record) => (
               <div
                 key={record.id}
-                className="rounded-lg border border-white/10 bg-white/[0.04] px-4 py-3 hover:bg-white/[0.07] transition-colors"
+                className="rounded-lg border border-black/10 bg-white/[0.52] px-4 py-3 hover:bg-black/[0.05] transition-colors"
               >
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0">
-                    <div className="text-sm font-medium text-white truncate">
+                    <div className="text-sm font-medium text-black truncate">
                       {record.title}
                     </div>
-                    <div className="mt-1 text-xs text-white/50 flex flex-wrap gap-x-3 gap-y-1">
+                    <div className="mt-1 text-xs text-black/50 flex flex-wrap gap-x-3 gap-y-1">
                       <span>{new Date(record.createdAt).toLocaleString("zh-CN")}</span>
                       <span>{record.language}</span>
                       <span>截图 {record.screenshotPaths.length} 张</span>
@@ -93,7 +93,7 @@ export function HistoryDialog({ open, onOpenChange }: HistoryDialogProps) {
                   </div>
                   <div className="flex shrink-0 gap-2">
                     <button
-                      className="rounded-md bg-white text-black px-3 py-1.5 text-xs hover:bg-white/90"
+                      className="rounded-md bg-black text-white px-3 py-1.5 text-xs hover:bg-black/80"
                       onClick={() => restore(record.id)}
                     >
                       打开

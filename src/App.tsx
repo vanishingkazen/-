@@ -260,10 +260,10 @@ function App() {
                 <WelcomeScreen onOpenSettings={handleOpenSettings} />
               )
             ) : (
-              <div className="min-h-screen bg-black flex items-center justify-center">
+              <div className="min-h-screen bg-white/[0.86] flex items-center justify-center backdrop-blur-xl">
                 <div className="flex flex-col items-center gap-3">
-                  <div className="w-6 h-6 border-2 border-white/20 border-t-white/80 rounded-full animate-spin"></div>
-                  <p className="text-white/60 text-sm">
+                  <div className="w-6 h-6 border-2 border-black/15 border-t-black/70 rounded-full animate-spin"></div>
+                  <p className="text-black/60 text-sm">
                     Initializing...
                   </p>
                 </div>

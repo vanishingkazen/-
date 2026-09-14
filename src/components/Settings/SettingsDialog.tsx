@@ -1,7 +1,6 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, type CSSProperties } from "react";
 import {
   Dialog,
-  DialogTrigger,
   DialogContent,
   DialogDescription,
   DialogHeader,
@@ -10,11 +9,9 @@ import {
 } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { Button } from "../ui/button";
-import { Settings } from "lucide-react";
 import { useToast } from "../../contexts/toast";
 
 type APIProvider = "openai" | "openai-compatible" | "gemini" | "anthropic";
-type QuestionMode = "coding" | "iq";
 
 type AIModel = {
   id: string;
@@ -35,8 +32,8 @@ type ModelCategory = {
 const modelCategories: ModelCategory[] = [
   {
     key: 'extractionModel',
-    title: 'Problem Extraction',
-    description: 'Model used to analyze screenshots and extract problem details',
+    title: 'Visual Solving (Screenshots)',
+    description: 'Vision model used to analyze screenshots and solve the problem directly',
     openaiModels: [
       {
         id: "gpt-4o",
@@ -81,8 +78,8 @@ const modelCategories: ModelCategory[] = [
   },
   {
     key: 'solutionModel',
-    title: 'Solution Generation',
-    description: 'Model used to generate coding solutions',
+    title: 'Follow-up Chat',
+    description: 'Model used for text follow-up and code discussion',
     openaiModels: [
       {
         id: "gpt-4o",
@@ -180,7 +177,6 @@ interface SettingsDialogProps {
 
 export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDialogProps) {
   const [open, setOpen] = useState(externalOpen || false);
-  const [questionMode, setQuestionMode] = useState<QuestionMode>("coding");
   const [apiKey, setApiKey] = useState("");
   const [apiProvider, setApiProvider] = useState<APIProvider>("openai");
   const [baseURL, setBaseURL] = useState("");
@@ -189,6 +185,9 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
   const [solutionBaseURL, setSolutionBaseURL] = useState("");
   const [solutionModel, setSolutionModel] = useState("gpt-4o");
   const [debuggingModel, setDebuggingModel] = useState("gpt-4o");
+  const [streamingEnabled, setStreamingEnabled] = useState(true);
+  const [opacity, setOpacity] = useState(1);
+  const savedOpacityRef = useRef(1);
   const [speechApiKey, setSpeechApiKey] = useState("");
   const [speechWorkspaceId, setSpeechWorkspaceId] = useState("");
   const [speechRegion, setSpeechRegion] = useState("cn-beijing");
@@ -205,6 +204,9 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
 
   // Handle open state changes
   const handleOpenChange = (newOpen: boolean) => {
+    if (!newOpen) {
+      void window.electronAPI.setOpacity(savedOpacityRef.current);
+    }
     setOpen(newOpen);
     // Only call onOpenChange when there's actually a change
     if (onOpenChange && newOpen !== externalOpen) {
@@ -217,7 +219,6 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
     if (open) {
       setIsLoading(true);
       interface Config {
-        questionMode?: QuestionMode;
         apiKey?: string;
         apiProvider?: APIProvider;
         baseURL?: string;
@@ -226,6 +227,8 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
         solutionBaseURL?: string;
         solutionModel?: string;
         debuggingModel?: string;
+        streamingEnabled?: boolean;
+        opacity?: number;
         speechApiKey?: string;
         speechWorkspaceId?: string;
         speechRegion?: string;
@@ -235,7 +238,6 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
       window.electronAPI
         .getConfig()
         .then((config: Config) => {
-          setQuestionMode(config.questionMode || "coding");
           setApiKey(config.apiKey || "");
           setApiProvider(config.apiProvider || "openai");
           setBaseURL(config.baseURL || "");
@@ -244,6 +246,10 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
           setSolutionBaseURL(config.solutionBaseURL || "");
           setSolutionModel(config.solutionModel || "gpt-4o");
           setDebuggingModel(config.debuggingModel || "gpt-4o");
+          setStreamingEnabled(config.streamingEnabled !== false);
+          const loadedOpacity = Math.min(1, Math.max(0.1, config.opacity ?? 1));
+          setOpacity(loadedOpacity);
+          savedOpacityRef.current = loadedOpacity;
           setSpeechApiKey(config.speechApiKey || "");
           setSpeechWorkspaceId(config.speechWorkspaceId || "");
           setSpeechRegion(config.speechRegion || "cn-beijing");
@@ -296,7 +302,7 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
       }
     }
 
-    if (questionMode === "coding" && (solutionBaseURL.trim() || solutionApiKey.trim())) {
+    if (solutionBaseURL.trim() || solutionApiKey.trim()) {
       try {
         const url = new URL(solutionBaseURL.trim());
         if (url.protocol !== "http:" && url.protocol !== "https:") {
@@ -314,7 +320,6 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
     setIsLoading(true);
     try {
       const result = await window.electronAPI.updateConfig({
-        questionMode,
         apiKey,
         apiProvider,
         baseURL: baseURL.trim().replace(/\/$/, ""),
@@ -323,6 +328,8 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
         solutionBaseURL: solutionBaseURL.trim().replace(/\/$/, ""),
         solutionModel,
         debuggingModel,
+        streamingEnabled,
+        opacity,
         speechApiKey,
         speechWorkspaceId: speechWorkspaceId.trim(),
         speechRegion,
@@ -330,6 +337,7 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
       });
       
       if (result) {
+        savedOpacityRef.current = opacity;
         showToast("Success", "Settings saved successfully", "success");
         handleOpenChange(false);
         
@@ -357,10 +365,12 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
     window.electronAPI.openLink(url);
   };
 
+  const opacityProgress = `${((opacity - 0.1) / 0.9) * 100}%`;
+
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent 
-        className="sm:max-w-md bg-black border border-white/10 text-white settings-dialog"
+        className="sm:max-w-md bg-white/[0.90] border border-black/10 text-black settings-dialog"
         style={{
           position: 'fixed',
           top: '50%',
@@ -381,121 +391,116 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
       >        
         <DialogHeader>
           <DialogTitle>API Settings</DialogTitle>
-          <DialogDescription className="text-white/70">
+          <DialogDescription className="text-black/65">
             Configure your API key and model preferences. You'll need your own API key to use this application.
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-4 py-4">
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-white">题目模式</label>
-            <div className="grid grid-cols-2 gap-2">
-              {([
-                { value: "coding", title: "编程题", description: "识别题目并生成代码" },
-                { value: "iq", title: "IQ 测评", description: "视觉模型直接判断答案" }
-              ] as const).map((mode) => (
-                <button
-                  key={mode.value}
-                  type="button"
-                  className={`p-2 rounded-lg text-left transition-colors ${
-                    questionMode === mode.value
-                      ? "bg-white/10 border border-white/20"
-                      : "bg-black/30 border border-white/5 hover:bg-white/5"
-                  }`}
-                  onClick={() => setQuestionMode(mode.value)}
-                >
-                  <p className="font-medium text-white text-sm">{mode.title}</p>
-                  <p className="text-xs text-white/60">{mode.description}</p>
-                </button>
-              ))}
-            </div>
-            {questionMode === "iq" && (
-              <p className="text-xs text-white/60">
-                IQ 模式直接使用下方“题目识别”模型分析截图；请选择支持图片输入的视觉模型。
-              </p>
-            )}
+        <div className="space-y-2 rounded-lg border border-black/10 bg-white/[0.52] p-3">
+          <div className="flex items-center justify-between gap-3">
+            <label className="text-sm font-medium text-black" htmlFor="ui-opacity">界面透明度</label>
+            <span className="rounded-md bg-black/[0.06] px-2 py-1 text-xs font-medium tabular-nums text-black/75">
+              {Math.round(opacity * 100)}%
+            </span>
           </div>
-
+          <input
+            id="ui-opacity"
+            type="range"
+            min="0.1"
+            max="1"
+            step="0.01"
+            value={opacity}
+            onChange={(event) => {
+              const nextOpacity = Math.min(1, Math.max(0.1, Number(event.target.value)));
+              setOpacity(nextOpacity);
+              void window.electronAPI.setOpacity(nextOpacity);
+            }}
+            className="opacity-slider"
+            style={{ "--opacity-progress": opacityProgress } as CSSProperties}
+          />
+          <p className="text-xs text-black/50">拖动时实时预览，点击保存后永久生效。</p>
+        </div>
+        <div className="space-y-4 py-4">
           {/* API Provider Selection */}
           <div className="space-y-2">
-            <label className="text-sm font-medium text-white">API Provider</label>
+            <label className="text-sm font-medium text-black">API Provider</label>
             <div className="grid grid-cols-2 gap-2">
               <div
                 className={`flex-1 p-2 rounded-lg cursor-pointer transition-colors ${
                   apiProvider === "openai"
-                    ? "bg-white/10 border border-white/20"
-                    : "bg-black/30 border border-white/5 hover:bg-white/5"
+                    ? "bg-black/[0.06] border border-black/20"
+                    : "bg-white/[0.48] border border-black/5 hover:bg-black/[0.04]"
                 }`}
                 onClick={() => handleProviderChange("openai")}
               >
                 <div className="flex items-center gap-2">
                   <div
                     className={`w-3 h-3 rounded-full ${
-                      apiProvider === "openai" ? "bg-white" : "bg-white/20"
+                      apiProvider === "openai" ? "bg-black" : "bg-black/20"
                     }`}
                   />
                   <div className="flex flex-col">
-                    <p className="font-medium text-white text-sm">OpenAI</p>
-                    <p className="text-xs text-white/60">GPT-4o models</p>
+                    <p className="font-medium text-black text-sm">OpenAI</p>
+                    <p className="text-xs text-black/60">GPT-4o models</p>
                   </div>
                 </div>
               </div>
               <div
                 className={`flex-1 p-2 rounded-lg cursor-pointer transition-colors ${
                   apiProvider === "openai-compatible"
-                    ? "bg-white/10 border border-white/20"
-                    : "bg-black/30 border border-white/5 hover:bg-white/5"
+                    ? "bg-black/[0.06] border border-black/20"
+                    : "bg-white/[0.48] border border-black/5 hover:bg-black/[0.04]"
                 }`}
                 onClick={() => handleProviderChange("openai-compatible")}
               >
                 <div className="flex items-center gap-2">
                   <div
                     className={`w-3 h-3 rounded-full ${
-                      apiProvider === "openai-compatible" ? "bg-white" : "bg-white/20"
+                      apiProvider === "openai-compatible" ? "bg-black" : "bg-black/20"
                     }`}
                   />
                   <div className="flex flex-col">
-                    <p className="font-medium text-white text-sm">OpenAI Compatible</p>
-                    <p className="text-xs text-white/60">Custom endpoint</p>
+                    <p className="font-medium text-black text-sm">OpenAI Compatible</p>
+                    <p className="text-xs text-black/60">Custom endpoint</p>
                   </div>
                 </div>
               </div>
               <div
                 className={`flex-1 p-2 rounded-lg cursor-pointer transition-colors ${
                   apiProvider === "gemini"
-                    ? "bg-white/10 border border-white/20"
-                    : "bg-black/30 border border-white/5 hover:bg-white/5"
+                    ? "bg-black/[0.06] border border-black/20"
+                    : "bg-white/[0.48] border border-black/5 hover:bg-black/[0.04]"
                 }`}
                 onClick={() => handleProviderChange("gemini")}
               >
                 <div className="flex items-center gap-2">
                   <div
                     className={`w-3 h-3 rounded-full ${
-                      apiProvider === "gemini" ? "bg-white" : "bg-white/20"
+                      apiProvider === "gemini" ? "bg-black" : "bg-black/20"
                     }`}
                   />
                   <div className="flex flex-col">
-                    <p className="font-medium text-white text-sm">Gemini</p>
-                    <p className="text-xs text-white/60">Gemini 1.5 models</p>
+                    <p className="font-medium text-black text-sm">Gemini</p>
+                    <p className="text-xs text-black/60">Gemini 1.5 models</p>
                   </div>
                 </div>
               </div>
               <div
                 className={`flex-1 p-2 rounded-lg cursor-pointer transition-colors ${
                   apiProvider === "anthropic"
-                    ? "bg-white/10 border border-white/20"
-                    : "bg-black/30 border border-white/5 hover:bg-white/5"
+                    ? "bg-black/[0.06] border border-black/20"
+                    : "bg-white/[0.48] border border-black/5 hover:bg-black/[0.04]"
                 }`}
                 onClick={() => handleProviderChange("anthropic")}
               >
                 <div className="flex items-center gap-2">
                   <div
                     className={`w-3 h-3 rounded-full ${
-                      apiProvider === "anthropic" ? "bg-white" : "bg-white/20"
+                      apiProvider === "anthropic" ? "bg-black" : "bg-black/20"
                     }`}
                   />
                   <div className="flex flex-col">
-                    <p className="font-medium text-white text-sm">Claude</p>
-                    <p className="text-xs text-white/60">Claude 3 models</p>
+                    <p className="font-medium text-black text-sm">Claude</p>
+                    <p className="text-xs text-black/60">Claude 3 models</p>
                   </div>
                 </div>
               </div>
@@ -504,7 +509,7 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
 
           {apiProvider === "openai-compatible" && (
             <div className="space-y-2">
-              <label className="text-sm font-medium text-white" htmlFor="baseURL">
+              <label className="text-sm font-medium text-black" htmlFor="baseURL">
                 API Base URL
               </label>
               <Input
@@ -513,16 +518,39 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
                 value={baseURL}
                 onChange={(e) => setBaseURL(e.target.value)}
                 placeholder="https://api.example.com/v1"
-                className="bg-black/50 border-white/10 text-white"
+                className="bg-white/[0.68] border-black/10 text-black"
               />
-              <p className="text-xs text-white/50">
+              <p className="text-xs text-black/50">
                 Include the API version path when required, for example /v1.
               </p>
+              <div className="flex items-center justify-between rounded-lg border border-black/10 bg-white/[0.52] p-3">
+                <div className="pr-3">
+                  <p className="text-sm font-medium text-black">流式输出（Streaming）</p>
+                  <p className="text-xs text-black/60">
+                    目前仅 DeepSeek 官方接口（api.deepseek.com）支持流式输出
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={streamingEnabled}
+                  onClick={() => setStreamingEnabled(!streamingEnabled)}
+                  className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+                    streamingEnabled ? "bg-blue-500" : "bg-black/15"
+                  }`}
+                >
+                  <span
+                    className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                      streamingEnabled ? "translate-x-5" : ""
+                    }`}
+                  />
+                </button>
+              </div>
             </div>
           )}
           
           <div className="space-y-2">
-            <label className="text-sm font-medium text-white" htmlFor="apiKey">
+            <label className="text-sm font-medium text-black" htmlFor="apiKey">
             {apiProvider === "openai-compatible" ? "Compatible API Key" :
              apiProvider === "openai" ? "OpenAI API Key" :
              apiProvider === "gemini" ? "Gemini API Key" : 
@@ -539,151 +567,157 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
                 apiProvider === "gemini" ? "Enter your Gemini API key" :
                 "sk-ant-..."
               }
-              className="bg-black/50 border-white/10 text-white"
+              className="bg-white/[0.68] border-black/10 text-black"
             />
             {apiKey && (
-              <p className="text-xs text-white/50">
+              <p className="text-xs text-black/50">
                 Current: {maskApiKey(apiKey)}
               </p>
             )}
-            <p className="text-xs text-white/50">
+            <p className="text-xs text-black/50">
               Your API key is stored locally and sent only to {
                 apiProvider === "openai-compatible" ? "your configured endpoint" :
                 apiProvider === "openai" ? "OpenAI" :
                 apiProvider === "gemini" ? "Google" : "Anthropic"
               }.
             </p>
-            <div className="mt-2 p-2 rounded-md bg-white/5 border border-white/10">
-              <p className="text-xs text-white/80 mb-1">Don't have an API key?</p>
+            <div className="mt-2 p-2 rounded-md bg-white/[0.52] border border-black/10">
+              <p className="text-xs text-black/75 mb-1">Don't have an API key?</p>
               {apiProvider === "openai-compatible" ? (
-                <p className="text-xs text-white/60">
+                <p className="text-xs text-black/60">
                   Use the API key issued by your OpenAI-compatible service. The endpoint must support Chat Completions and image inputs for screenshot extraction.
                 </p>
               ) : apiProvider === "openai" ? (
                 <>
-                  <p className="text-xs text-white/60 mb-1">1. Create an account at <button 
+                  <p className="text-xs text-black/60 mb-1">1. Create an account at <button 
                     onClick={() => openExternalLink('https://platform.openai.com/signup')} 
-                    className="text-blue-400 hover:underline cursor-pointer">OpenAI</button>
+                    className="text-blue-600 hover:underline cursor-pointer">OpenAI</button>
                   </p>
-                  <p className="text-xs text-white/60 mb-1">2. Go to <button 
+                  <p className="text-xs text-black/60 mb-1">2. Go to <button 
                     onClick={() => openExternalLink('https://platform.openai.com/api-keys')} 
-                    className="text-blue-400 hover:underline cursor-pointer">API Keys</button> section
+                    className="text-blue-600 hover:underline cursor-pointer">API Keys</button> section
                   </p>
-                  <p className="text-xs text-white/60">3. Create a new secret key and paste it here</p>
+                  <p className="text-xs text-black/60">3. Create a new secret key and paste it here</p>
                 </>
               ) : apiProvider === "gemini" ?  (
                 <>
-                  <p className="text-xs text-white/60 mb-1">1. Create an account at <button 
+                  <p className="text-xs text-black/60 mb-1">1. Create an account at <button 
                     onClick={() => openExternalLink('https://aistudio.google.com/')} 
-                    className="text-blue-400 hover:underline cursor-pointer">Google AI Studio</button>
+                    className="text-blue-600 hover:underline cursor-pointer">Google AI Studio</button>
                   </p>
-                  <p className="text-xs text-white/60 mb-1">2. Go to the <button 
+                  <p className="text-xs text-black/60 mb-1">2. Go to the <button 
                     onClick={() => openExternalLink('https://aistudio.google.com/app/apikey')} 
-                    className="text-blue-400 hover:underline cursor-pointer">API Keys</button> section
+                    className="text-blue-600 hover:underline cursor-pointer">API Keys</button> section
                   </p>
-                  <p className="text-xs text-white/60">3. Create a new API key and paste it here</p>
+                  <p className="text-xs text-black/60">3. Create a new API key and paste it here</p>
                 </>
               ) : (
                 <>
-                  <p className="text-xs text-white/60 mb-1">1. Create an account at <button 
+                  <p className="text-xs text-black/60 mb-1">1. Create an account at <button 
                     onClick={() => openExternalLink('https://console.anthropic.com/signup')} 
-                    className="text-blue-400 hover:underline cursor-pointer">Anthropic</button>
+                    className="text-blue-600 hover:underline cursor-pointer">Anthropic</button>
                   </p>
-                  <p className="text-xs text-white/60 mb-1">2. Go to the <button 
+                  <p className="text-xs text-black/60 mb-1">2. Go to the <button 
                     onClick={() => openExternalLink('https://console.anthropic.com/settings/keys')} 
-                    className="text-blue-400 hover:underline cursor-pointer">API Keys</button> section
+                    className="text-blue-600 hover:underline cursor-pointer">API Keys</button> section
                   </p>
-                  <p className="text-xs text-white/60">3. Create a new API key and paste it here</p>
+                  <p className="text-xs text-black/60">3. Create a new API key and paste it here</p>
                 </>
               )}
             </div>
           </div>
           
           <div className="space-y-2 mt-4">
-            <label className="text-sm font-medium text-white mb-2 block">Keyboard Shortcuts</label>
-            <div className="bg-black/30 border border-white/10 rounded-lg p-3">
+            <label className="text-sm font-medium text-black mb-2 block">Keyboard Shortcuts</label>
+            <div className="bg-white/[0.48] border border-black/10 rounded-lg p-3">
               <div className="grid grid-cols-2 gap-y-2 text-xs">
-                <div className="text-white/70">Toggle Visibility</div>
-                <div className="text-white/90 font-mono">Ctrl+B / Cmd+B</div>
+                <div className="text-black/65">Toggle Visibility</div>
+                <div className="text-black/80 font-mono">/</div>
                 
-                <div className="text-white/70">Take Screenshot</div>
-                <div className="text-white/90 font-mono">Ctrl+H / Cmd+H</div>
+                <div className="text-black/65">Mouse Shake</div>
+                <div className="text-black/80">快速左右晃动 4 次</div>
                 
-                <div className="text-white/70">Process Screenshots</div>
-                <div className="text-white/90 font-mono">Ctrl+Enter / Cmd+Enter</div>
+                <div className="text-black/65">New Session</div>
+                <div className="text-black/80 font-mono">Cmd+N（macOS）</div>
+                
+                <div className="text-black/65">Take Screenshot</div>
+                <div className="text-black/80 font-mono">Ctrl+H / Cmd+H</div>
+                
+                <div className="text-black/65">Process Screenshots</div>
+                <div className="text-black/80 font-mono">Ctrl+Enter / Cmd+Enter</div>
 
-                <div className="text-white/70">Toggle Voice Input</div>
-                <div className="text-white/90 font-mono">Ctrl+Shift+M / Cmd+Shift+M</div>
+                <div className="text-black/65">Toggle Voice Input</div>
+                <div className="text-black/80 font-mono">Ctrl+Shift+M / Cmd+Shift+M</div>
                 
-                <div className="text-white/70">Delete Last Screenshot</div>
-                <div className="text-white/90 font-mono">Ctrl+L / Cmd+L</div>
+                <div className="text-black/65">Delete Last Screenshot</div>
+                <div className="text-black/80 font-mono">Ctrl+L / Cmd+L</div>
                 
-                <div className="text-white/70">Reset View</div>
-                <div className="text-white/90 font-mono">Ctrl+R / Cmd+R</div>
+                <div className="text-black/65">Reset View</div>
+                <div className="text-black/80 font-mono">Ctrl+R / Cmd+R</div>
                 
-                <div className="text-white/70">Quit Application</div>
-                <div className="text-white/90 font-mono">Ctrl+Q / Cmd+Q</div>
+                <div className="text-black/65">Quit Application</div>
+                <div className="text-black/80 font-mono">Ctrl+Q / Cmd+Q</div>
                 
-                <div className="text-white/70">Move Window</div>
-                <div className="text-white/90 font-mono">Ctrl+Arrow Keys</div>
+                <div className="text-black/65">Move Window</div>
+                <div className="text-black/80 font-mono">Ctrl+Arrow Keys</div>
                 
-                <div className="text-white/70">Decrease Opacity</div>
-                <div className="text-white/90 font-mono">Ctrl+[ / Cmd+[</div>
+                <div className="text-black/65">Decrease Opacity</div>
+                <div className="text-black/80 font-mono">Ctrl+[ / Cmd+[</div>
                 
-                <div className="text-white/70">Increase Opacity</div>
-                <div className="text-white/90 font-mono">Ctrl+] / Cmd+]</div>
+                <div className="text-black/65">Increase Opacity</div>
+                <div className="text-black/80 font-mono">Ctrl+] / Cmd+]</div>
                 
-                <div className="text-white/70">Zoom Out</div>
-                <div className="text-white/90 font-mono">Ctrl+- / Cmd+-</div>
+                <div className="text-black/65">Zoom Out</div>
+                <div className="text-black/80 font-mono">Ctrl+- / Cmd+-</div>
                 
-                <div className="text-white/70">Reset Zoom</div>
-                <div className="text-white/90 font-mono">Ctrl+0 / Cmd+0</div>
+                <div className="text-black/65">Reset Zoom</div>
+                <div className="text-black/80 font-mono">Ctrl+0 / Cmd+0</div>
                 
-                <div className="text-white/70">Zoom In</div>
-                <div className="text-white/90 font-mono">Ctrl+= / Cmd+=</div>
+                <div className="text-black/65">Zoom In</div>
+                <div className="text-black/80 font-mono">Ctrl+= / Cmd+=</div>
               </div>
             </div>
           </div>
           
           <div className="space-y-4 mt-4">
-            <div className="space-y-3 rounded-lg border border-white/10 bg-white/[0.03] p-3">
+            <div className="space-y-3 rounded-lg border border-black/10 bg-white/[0.52] p-3">
               <div>
-                <label className="text-sm font-medium text-white">Qwen Realtime Speech Recognition</label>
-                <p className="text-xs text-white/60">
+                <label className="text-sm font-medium text-black">Qwen Realtime Speech Recognition</label>
+                <p className="text-xs text-black/60">
                   Optional Alibaba Cloud realtime transcription used by Ctrl+Shift+M.
                 </p>
               </div>
               <div className="space-y-1">
-                <label className="text-xs text-white/70" htmlFor="speechApiKey">DashScope API Key</label>
+                <label className="text-xs text-black/65" htmlFor="speechApiKey">DashScope API Key</label>
                 <Input
                   id="speechApiKey"
                   type="password"
                   value={speechApiKey}
                   onChange={(e) => setSpeechApiKey(e.target.value)}
                   placeholder="sk-..."
-                  className="bg-black/50 border-white/10 text-white"
+                  className="bg-white/[0.68] border-black/10 text-black"
                 />
-                {speechApiKey && <p className="text-xs text-white/50">Current: {maskApiKey(speechApiKey)}</p>}
+                {speechApiKey && <p className="text-xs text-black/50">Current: {maskApiKey(speechApiKey)}</p>}
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">
-                  <label className="text-xs text-white/70" htmlFor="speechWorkspaceId">Workspace ID（可选）</label>
+                  <label className="text-xs text-black/65" htmlFor="speechWorkspaceId">Workspace ID（可选）</label>
                   <Input
                     id="speechWorkspaceId"
                     value={speechWorkspaceId}
                     onChange={(e) => setSpeechWorkspaceId(e.target.value)}
                     placeholder="留空使用公共服务入口"
-                    className="bg-black/50 border-white/10 text-white font-mono"
+                    className="bg-white/[0.68] border-black/10 text-black font-mono"
                   />
-                  <p className="text-[11px] text-white/45">仅填写百炼控制台中的真实业务空间 ID</p>
+                  <p className="text-[11px] text-black/[0.45]">仅填写百炼控制台中的真实业务空间 ID</p>
                 </div>
                 <div className="space-y-1">
-                  <label className="text-xs text-white/70" htmlFor="speechRegion">Region</label>
+                  <label className="text-xs text-black/65" htmlFor="speechRegion">Region</label>
                   <select
                     id="speechRegion"
                     value={speechRegion}
                     onChange={(e) => setSpeechRegion(e.target.value)}
-                    className="h-10 w-full rounded-md border border-white/10 bg-black/50 px-3 text-sm text-white"
+                    className="h-10 w-full rounded-md border border-black/10 bg-white/[0.68] px-3 text-sm text-black"
                   >
                     <option value="cn-beijing">北京 cn-beijing</option>
                     <option value="ap-southeast-1">新加坡 ap-southeast-1</option>
@@ -691,26 +725,26 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
                 </div>
               </div>
               <div className="space-y-1">
-                <label className="text-xs text-white/70" htmlFor="speechModel">Speech Model</label>
+                <label className="text-xs text-black/65" htmlFor="speechModel">Speech Model</label>
                 <Input
                   id="speechModel"
                   value={speechModel}
                   onChange={(e) => setSpeechModel(e.target.value)}
                   placeholder="qwen-audio-3.0-asr-flash-streaming"
-                  className="bg-black/50 border-white/10 text-white font-mono"
+                  className="bg-white/[0.68] border-black/10 text-black font-mono"
                 />
               </div>
             </div>
 
-            {questionMode === "coding" && <div className="space-y-3 rounded-lg border border-white/10 bg-white/[0.03] p-3">
+            <div className="space-y-3 rounded-lg border border-black/10 bg-white/[0.52] p-3">
               <div>
-                <label className="text-sm font-medium text-white">Cloud Solution Endpoint</label>
-                <p className="text-xs text-white/60">
+                <label className="text-sm font-medium text-black">Cloud Solution Endpoint</label>
+                <p className="text-xs text-black/60">
                   Optional separate OpenAI-compatible endpoint used only for solution generation.
                 </p>
               </div>
               <div className="space-y-1">
-                <label className="text-xs text-white/70" htmlFor="solutionBaseURL">
+                <label className="text-xs text-black/65" htmlFor="solutionBaseURL">
                   Solution Base URL
                 </label>
                 <Input
@@ -719,11 +753,11 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
                   value={solutionBaseURL}
                   onChange={(e) => setSolutionBaseURL(e.target.value)}
                   placeholder="https://api.deepseek.com"
-                  className="bg-black/50 border-white/10 text-white font-mono"
+                  className="bg-white/[0.68] border-black/10 text-black font-mono"
                 />
               </div>
               <div className="space-y-1">
-                <label className="text-xs text-white/70" htmlFor="solutionApiKey">
+                <label className="text-xs text-black/65" htmlFor="solutionApiKey">
                   Solution API Key
                 </label>
                 <Input
@@ -732,21 +766,19 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
                   value={solutionApiKey}
                   onChange={(e) => setSolutionApiKey(e.target.value)}
                   placeholder="sk-..."
-                  className="bg-black/50 border-white/10 text-white"
+                  className="bg-white/[0.68] border-black/10 text-black"
                 />
                 {solutionApiKey && (
-                  <p className="text-xs text-white/50">
+                  <p className="text-xs text-black/50">
                     Current: {maskApiKey(solutionApiKey)}
                   </p>
                 )}
               </div>
-            </div>}
+            </div>
 
-            <label className="text-sm font-medium text-white">AI Model Selection</label>
-            <p className="text-xs text-white/60 -mt-3 mb-2">
-              {questionMode === "iq"
-                ? "IQ 模式仅使用题目识别模型；该模型必须支持图片输入"
-                : "Select which models to use for each stage of the process"}
+            <label className="text-sm font-medium text-black">AI Model Selection</label>
+            <p className="text-xs text-black/60 -mt-3 mb-2">
+              截图由视觉模型直接解题；文字追问和调试使用对应的独立模型。
             </p>
             
             {apiProvider === "openai-compatible" ? (
@@ -754,15 +786,15 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
                 {[
                   {
                     id: "customExtractionModel",
-                    label: "Problem Extraction",
-                    description: "Must support image inputs",
+                    label: "Visual Solving (Screenshots)",
+                    description: "Must support image inputs and direct problem solving",
                     value: extractionModel,
                     setter: setExtractionModel,
                   },
                   {
                     id: "customSolutionModel",
-                    label: "Solution Generation",
-                    description: "Model used to generate coding solutions",
+                    label: "Follow-up Chat",
+                    description: "Model used for text follow-up and code discussion",
                     value: solutionModel,
                     setter: setSolutionModel,
                   },
@@ -773,24 +805,23 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
                     value: debuggingModel,
                     setter: setDebuggingModel,
                   },
-                ].filter((field) => questionMode === "coding" || field.id === "customExtractionModel").map((field) => (
+                ].map((field) => (
                   <div key={field.id} className="space-y-1">
-                    <label className="text-sm font-medium text-white" htmlFor={field.id}>
+                    <label className="text-sm font-medium text-black" htmlFor={field.id}>
                       {field.label}
                     </label>
-                    <p className="text-xs text-white/60">{field.description}</p>
+                    <p className="text-xs text-black/60">{field.description}</p>
                     <Input
                       id={field.id}
                       value={field.value}
                       onChange={(e) => field.setter(e.target.value)}
                       placeholder="Enter the exact model ID"
-                      className="bg-black/50 border-white/10 text-white font-mono"
+                      className="bg-white/[0.68] border-black/10 text-black font-mono"
                     />
                   </div>
                 ))}
               </div>
             ) : modelCategories
-              .filter((category) => questionMode === "coding" || category.key === "extractionModel")
               .map((category) => {
               // Get the appropriate model list based on selected provider
               const models = 
@@ -800,10 +831,10 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
               
               return (
                 <div key={category.key} className="mb-4">
-                  <label className="text-sm font-medium text-white mb-1 block">
+                  <label className="text-sm font-medium text-black mb-1 block">
                     {category.title}
                   </label>
-                  <p className="text-xs text-white/60 mb-2">{category.description}</p>
+                  <p className="text-xs text-black/60 mb-2">{category.description}</p>
                   
                   <div className="space-y-2">
                     {models.map((m) => {
@@ -824,20 +855,20 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
                           key={m.id}
                           className={`p-2 rounded-lg cursor-pointer transition-colors ${
                             currentValue === m.id
-                              ? "bg-white/10 border border-white/20"
-                              : "bg-black/30 border border-white/5 hover:bg-white/5"
+                              ? "bg-black/[0.06] border border-black/20"
+                              : "bg-white/[0.48] border border-black/5 hover:bg-black/[0.04]"
                           }`}
                           onClick={() => setValue(m.id)}
                         >
                           <div className="flex items-center gap-2">
                             <div
                               className={`w-3 h-3 rounded-full ${
-                                currentValue === m.id ? "bg-white" : "bg-white/20"
+                                currentValue === m.id ? "bg-black" : "bg-black/20"
                               }`}
                             />
                             <div>
-                              <p className="font-medium text-white text-xs">{m.name}</p>
-                              <p className="text-xs text-white/60">{m.description}</p>
+                              <p className="font-medium text-black text-xs">{m.name}</p>
+                              <p className="text-xs text-black/60">{m.description}</p>
                             </div>
                           </div>
                         </div>
@@ -853,19 +884,19 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
           <Button
             variant="outline"
             onClick={() => handleOpenChange(false)}
-            className="border-white/10 hover:bg-white/5 text-white"
+            className="border-black/10 hover:bg-black/[0.04] text-black"
           >
             Cancel
           </Button>
           <Button
-            className="px-4 py-3 bg-white text-black rounded-xl font-medium hover:bg-white/90 transition-colors"
+            className="px-4 py-3 bg-black text-white rounded-xl font-medium hover:bg-black/80 transition-colors"
             onClick={handleSave}
             disabled={
               isLoading || !apiKey ||
-              (questionMode === "coding" && Boolean(solutionBaseURL.trim()) !== Boolean(solutionApiKey.trim())) ||
+              Boolean(solutionBaseURL.trim()) !== Boolean(solutionApiKey.trim()) ||
               (apiProvider === "openai-compatible" && (
                 !baseURL.trim() || !extractionModel.trim() ||
-                (questionMode === "coding" && (!solutionModel.trim() || !debuggingModel.trim()))
+                (!solutionModel.trim() || !debuggingModel.trim())
               ))
             }
           >

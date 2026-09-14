@@ -35,6 +35,7 @@ const electronAPI = {
     return ipcRenderer.invoke("open-subscription-portal", authData)
   },
   openSettingsPortal: () => ipcRenderer.invoke("open-settings-portal"),
+  setOpacity: (opacity: number) => ipcRenderer.invoke("set-opacity", opacity),
   updateContentDimensions: (dimensions: { width: number; height: number }) =>
     ipcRenderer.invoke("update-content-dimensions", dimensions),
   clearStore: () => ipcRenderer.invoke("clear-store"),
@@ -96,6 +97,13 @@ const electronAPI = {
     ipcRenderer.on("focus-chat-input", subscription)
     return () => {
       ipcRenderer.removeListener("focus-chat-input", subscription)
+    }
+  },
+  onNewChatSession: (callback: () => void) => {
+    const subscription = () => callback()
+    ipcRenderer.on("new-chat-session", subscription)
+    return () => {
+      ipcRenderer.removeListener("new-chat-session", subscription)
     }
   },
   onScrollChat: (callback: (data: { direction: "up" | "down" }) => void) => {

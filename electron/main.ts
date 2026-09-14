@@ -9,6 +9,7 @@ import { initAutoUpdater } from "./autoUpdater"
 import { configHelper } from "./ConfigHelper"
 import { historyHelper } from "./HistoryHelper"
 import { VoiceRecognitionHelper } from "./VoiceRecognitionHelper"
+import { MouseShakeDetector } from "./MouseShakeDetector"
 import * as dotenv from "dotenv"
 
 // Constants
@@ -35,6 +36,7 @@ const state = {
   shortcutsHelper: null as ShortcutsHelper | null,
   processingHelper: null as ProcessingHelper | null,
   voiceRecognitionHelper: null as VoiceRecognitionHelper | null,
+  mouseShakeDetector: null as MouseShakeDetector | null,
 
   // View and state management
   view: "queue" as "queue" | "solutions" | "debug",
@@ -171,6 +173,16 @@ function initializeHelpers() {
     moveWindowDown: () => moveWindowVertical((y) => y + state.step),
     resetWindowPosition
   } as IShortcutsHelperDeps)
+
+  state.mouseShakeDetector = new MouseShakeDetector({
+    onTrigger: () => {
+      console.log("Rapid mouse shake detected. Toggling window visibility.")
+      toggleMainWindow()
+    }
+  })
+  app.once("will-quit", () => {
+    state.mouseShakeDetector?.stop()
+  })
 }
 
 // Auth callback handler
@@ -401,15 +413,15 @@ async function createWindow(): Promise<void> {
   state.isWindowVisible = true
   
   // Set opacity based on user preferences or hide initially
-  // Ensure the window is visible for the first launch or if opacity > 0.1
+  // Ensure the window is visible for the first launch or if opacity >= 0.1
   const savedOpacity = configHelper.getOpacity();
   console.log(`Initial opacity from config: ${savedOpacity}`);
   
   // Always make sure window is shown first
   state.mainWindow.showInactive(); // Use showInactive for consistency
   
-  if (savedOpacity <= 0.1) {
-    console.log('Initial opacity too low, setting to 0 and hiding window');
+  if (savedOpacity < 0.1) {
+    console.log('Initial opacity below minimum, setting to 0 and hiding window');
     state.mainWindow.setOpacity(0);
     state.isWindowVisible = false;
   } else {
@@ -469,9 +481,10 @@ function showMainWindow(): void {
     state.mainWindow.setContentProtection(true);
     state.mainWindow.setOpacity(0); // Set opacity to 0 before showing
     state.mainWindow.showInactive(); // Use showInactive instead of show+focus
-    state.mainWindow.setOpacity(1); // Then set opacity to 1 after showing
+    const savedOpacity = configHelper.getOpacity()
+    state.mainWindow.setOpacity(savedOpacity); // Restore the user-configured opacity
     state.isWindowVisible = true;
-    console.log('Window shown with showInactive(), opacity set to 1');
+    console.log(`Window shown with showInactive(), opacity set to ${savedOpacity}`);
   }
 }
 
@@ -624,8 +637,9 @@ async function initializeApp() {
       moveWindowUp: () => moveWindowVertical((y) => y - state.step),
       moveWindowDown: () => moveWindowVertical((y) => y + state.step)
     })
-    await createWindow()
     state.shortcutsHelper?.registerGlobalShortcuts()
+    await createWindow()
+    state.mouseShakeDetector?.start()
 
     // Initialize auto-updater regardless of environment
     initAutoUpdater()
