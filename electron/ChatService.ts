@@ -60,6 +60,7 @@ type ProviderMessage = { role: "system" | "user" | "assistant"; content: string 
 const SYSTEM_PROMPT = "你是一个多轮对话助手，能够处理文本、代码和截图。保持上下文连续，直接回答用户，所有说明和代码注释使用简体中文。"
 const IMAGE_TOKEN_ESTIMATE = 1024
 const MIN_IMAGE_TEXT_TOKENS = 64
+const MAX_STORED_SESSIONS = 50
 
 const LANGUAGE_ALIASES: Record<string, string> = {
   py: "python",
@@ -182,6 +183,9 @@ class ChatStore {
   private readonly filePath: string
   private sessions: ChatSession[] = []
   private currentSessionId = ""
+  /** 会话被保留上限裁掉时的回调（用于回收远端图片文件） */
+  public onSessionsDropped: ((sessions: ChatSession[]) => void) | null = null
+  private readonly droppedSessionIds = new Set<string>()
 
   constructor() {
     const directory = path.join(app.getPath("appData"), "steamgamecode")
@@ -242,7 +246,7 @@ class ChatStore {
       fs.mkdirSync(path.dirname(this.filePath), { recursive: true })
       const ordered = this.list()
       const current = this.get(this.currentSessionId)
-      const sessions = ordered.slice(0, 50)
+      const sessions = ordered.slice(0, MAX_STORED_SESSIONS)
       // The selected session is part of the user's active context and must not
       // disappear merely because an older session crossed the retention limit.
       if (current && !sessions.some((item) => item.id === current.id)) {
@@ -264,6 +268,7 @@ class ChatStore {
       const tempPath = this.filePath + ".tmp"
       fs.writeFileSync(tempPath, payload, "utf8")
       fs.renameSync(tempPath, this.filePath)
+      this.dropSessionsOutsideRetention(sessions)
     } catch (error) {
       console.error("Failed to save chat sessions:", error)
     }
@@ -274,13 +279,59 @@ class ChatStore {
     this.sessions = this.sessions.filter((item) => item.id !== id)
     if (this.sessions.length === before) return false
     if (this.currentSessionId === id) this.currentSessionId = this.list()[0]?.id || ""
+    this.removeAttachmentDirectory(id)
+    this.save()
+    return true
+  }
+
+  private removeAttachmentDirectory(id: string): void {
     try {
       fs.rmSync(path.join(path.dirname(this.filePath), "chat-attachments", safeStorageComponent(id)), { recursive: true, force: true })
     } catch (error) {
       console.warn("Failed to delete chat attachments:", error)
     }
-    this.save()
-    return true
+  }
+
+  /**
+   * 超出保留上限的会话不再写盘，远端文件需要回收；本地会话仍然保留在内存中，
+   * 用户重新选中它时会再次写回，并按需重新上传图片。
+   */
+  private dropSessionsOutsideRetention(persisted: ChatSession[]): void {
+    const kept = new Set(persisted.map((session) => session.id))
+    for (const id of [...this.droppedSessionIds]) {
+      if (kept.has(id)) this.droppedSessionIds.delete(id)
+    }
+
+    const dropped = this.sessions.filter((session) => !kept.has(session.id) && !this.droppedSessionIds.has(session.id))
+    if (!dropped.length) return
+    for (const session of dropped) this.droppedSessionIds.add(session.id)
+
+    if (this.onSessionsDropped) {
+      try {
+        this.onSessionsDropped(dropped)
+      } catch (error) {
+        console.warn("Failed to handle dropped chat sessions:", error)
+      }
+    }
+  }
+
+  /**
+   * 清理已经不在会话列表里的附件目录（保留上限裁掉或历史遗留），
+   * 避免截图文件长期占用磁盘。只会在会话文件解析成功时执行。
+   */
+  private removeOrphanAttachmentDirectories(): void {
+    const root = path.join(path.dirname(this.filePath), "chat-attachments")
+    if (!fs.existsSync(root)) return
+
+    const kept = new Set(this.sessions.map((session) => safeStorageComponent(session.id)))
+    try {
+      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+        if (!entry.isDirectory() || kept.has(entry.name)) continue
+        fs.rmSync(path.join(root, entry.name), { recursive: true, force: true })
+      }
+    } catch (error) {
+      console.warn("Failed to clean orphan chat attachments:", error)
+    }
   }
 
   public getAttachmentDirectory(sessionId: string): string {
@@ -327,6 +378,7 @@ class ChatStore {
         ? parsed.currentSessionId
         : ""
       this.currentSessionId = this.get(persistedCurrentId)?.id || this.list()[0]?.id || ""
+      this.removeOrphanAttachmentDirectories()
     } catch {
       this.sessions = []
       this.currentSessionId = ""
@@ -368,6 +420,15 @@ export class ChatService {
 
   constructor(deps: ChatServiceDeps) {
     this.deps = deps
+    // 会话被保留策略裁掉时回收远端图片文件；本地会话仍可继续使用，
+    // 需要时会按 fileId 缺失的逻辑重新上传。
+    this.store.onSessionsDropped = (sessions) => {
+      for (const session of sessions) {
+        void this.deleteRemoteFiles(session, { clearReferences: true }).catch((error) => {
+          console.warn("Failed to delete remote chat files:", error)
+        })
+      }
+    }
   }
 
   public getCurrentSession(): ChatSession {
@@ -900,7 +961,10 @@ export class ChatService {
     return response.content.filter((block) => block.type === "text").map((block) => block.text).join("\n")
   }
 
-  private async deleteRemoteFiles(session: ChatSession): Promise<void> {
+  private async deleteRemoteFiles(
+    session: ChatSession,
+    options: { clearReferences?: boolean } = {}
+  ): Promise<void> {
     const config = configHelper.loadConfig()
     const filesConfig: DeepSeekFilesConfig = {
       apiKey: config.apiKey,
@@ -912,9 +976,15 @@ export class ChatService {
     const ownerHash = fileOwnerFingerprint(filesConfig)
     const fileIds = new Set<string>()
     for (const message of session.messages) {
-      for (const image of message.images) {
-        if (image.fileId && image.fileOwnerHash === ownerHash) fileIds.add(image.fileId)
-      }
+      message.images = message.images.map((image) => {
+        if (!image.fileId || image.fileOwnerHash !== ownerHash) return image
+        fileIds.add(image.fileId)
+        if (!options.clearReferences) return image
+        const cleared: ChatAttachment = { ...image }
+        delete cleared.fileId
+        delete cleared.fileOwnerHash
+        return cleared
+      })
     }
 
     await Promise.allSettled([...fileIds].map(async (fileId) => {

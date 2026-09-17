@@ -7,7 +7,7 @@ import { v4 as uuidv4 } from "uuid";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import screenshot from "screenshot-desktop";
-import os from "os";
+import { detectImageMime } from "./ChatImageUtils";
 
 const execFileAsync = promisify(execFile);
 
@@ -379,7 +379,8 @@ export class ScreenshotHelper {
       }
 
       const data = await fs.promises.readFile(filepath);
-      return `data:image/png;base64,${data.toString("base64")}`;
+      const mimeType = detectImageMime(filepath);
+      return `data:${mimeType};base64,${data.toString("base64")}`;
     } catch (error) {
       console.error("Error reading image:", error);
       return "";

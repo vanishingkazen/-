@@ -748,6 +748,51 @@ test("会话保留上限不会丢失当前选中的旧会话", async () => {
   assert.equal(persisted.sessions.length, 50)
 })
 
+test("启动时会清理已不在会话列表中的附件目录", async () => {
+  const { service } = setup()
+  const session = service.createSession()
+  const image = pngFile("orphan-attachment.png")
+
+  const sent = await service.sendMessage(session.id, "请分析这张截图", [{ path: image }], "request-orphan-attachment")
+  assert.equal(sent.success, true)
+
+  const attachmentDir = path.join(appDataPath, "steamgamecode", "chat-attachments", session.id)
+  assert.equal(fs.existsSync(attachmentDir), true)
+
+  // 模拟上一次运行被保留上限裁掉的会话：会话记录没了，只剩附件目录
+  const sessionFile = path.join(appDataPath, "steamgamecode", "chat-sessions.json")
+  const persisted = JSON.parse(fs.readFileSync(sessionFile, "utf8"))
+  persisted.sessions = persisted.sessions.filter((item) => item.id !== session.id)
+  fs.writeFileSync(sessionFile, JSON.stringify(persisted), "utf8")
+
+  new ChatService({ getMainWindow: () => ({ webContents: { send() {} } }) })
+
+  assert.equal(fs.existsSync(attachmentDir), false)
+})
+
+test("会话超出保留上限时回收远端图片文件", async () => {
+  const { service } = setup({
+    apiKey: "deepseek-test-key",
+    baseURL: "https://api.deepseek.com",
+    streamingEnabled: false
+  })
+  axiosResponder = async (url) => {
+    if (url.endsWith("/files")) return { data: { id: "file-retention-1", filename: "image.png" } }
+    return defaultAxiosResponder(url, {})
+  }
+  const session = service.createSession()
+  const image = pngFile("retention-remote.png")
+
+  const sent = await service.sendMessage(session.id, "请分析这张截图", [{ path: image }], "request-retention-remote")
+  assert.equal(sent.success, true)
+  assert.equal(axiosCalls.filter((call) => call.url.endsWith("/files")).length, 1)
+
+  for (let index = 0; index < 50; index += 1) service.createSession()
+  await new Promise((resolve) => setImmediate(resolve))
+
+  assert.equal(axiosDeletes.some((call) => call.url.endsWith("/file-retention-1")), true)
+})
+
 test("请求处理中禁止切换或删除会话", async () => {
   const { service } = setup()
   const first = service.createSession()
