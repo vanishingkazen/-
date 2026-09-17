@@ -34,7 +34,7 @@ if (process.platform === "win32") {
 initializeMainLogging()
 installCrashRecovery()
 
-const allowedExternalHosts = ["google.com", "supabase.co"]
+const allowedExternalHosts = ["google.com"]
 
 function configureWebContents(contents: WebContents): void {
   contents.setWindowOpenHandler(({ url }) => {
@@ -42,8 +42,7 @@ function configureWebContents(contents: WebContents): void {
       const hostname = new URL(url).hostname.toLowerCase()
       if (
         allowedExternalHosts.includes(hostname) ||
-        hostname.endsWith(".google.com") ||
-        hostname.endsWith(".supabase.co")
+        hostname.endsWith(".google.com")
       ) {
         void shell.openExternal(url)
       }

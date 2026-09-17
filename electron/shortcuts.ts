@@ -258,7 +258,6 @@ export class ShortcutsHelper {
       const mainWindow = this.deps.getMainWindow()
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send("reset-view")
-        mainWindow.webContents.send("reset")
       }
     })
 

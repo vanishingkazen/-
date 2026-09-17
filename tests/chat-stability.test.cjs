@@ -549,7 +549,7 @@ test("IPC chat handlers 校验参数、尊重显式 sessionId 并支持切换删
   assert.equal(deleted.session.id, second.id)
 })
 
-test("IPC reset 会取消请求、创建新会话并按顺序广播 reset-view/reset", async () => {
+test("IPC reset 会取消请求、创建新会话并广播 reset-view", async () => {
   const { service, mainWindow, events } = setup()
   const oldSession = service.createSession({ title: "before reset" })
   const gate = deferred()
@@ -569,8 +569,8 @@ test("IPC reset 会取消请求、创建新会话并按顺序广播 reset-view/r
   assert.equal(state.cancelRequests, 1)
   const newSession = service.getCurrentSession()
   assert.notEqual(newSession.id, oldSession.id)
-  assert.deepEqual(events.slice(-2).map((event) => event.channel), ["reset-view", "reset"])
-  assert.equal(events.at(-2).payload.session.id, newSession.id)
+  assert.equal(events.at(-1).channel, "reset-view")
+  assert.equal(events.at(-1).payload.session.id, newSession.id)
   await pending
   assert.equal(service.getSession(newSession.id).messages.length, 0)
 })

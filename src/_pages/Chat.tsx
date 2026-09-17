@@ -25,16 +25,12 @@ import cpp from "react-syntax-highlighter/dist/esm/languages/prism/cpp"
 import csharp from "react-syntax-highlighter/dist/esm/languages/prism/csharp"
 import go from "react-syntax-highlighter/dist/esm/languages/prism/go"
 import rust from "react-syntax-highlighter/dist/esm/languages/prism/rust"
-import type { HistoryRecord, SavedSolutionData } from "../types/history"
 import type { ChatMessage as StoredChatMessage } from "../types/chat"
-import type { ProblemStatementData } from "../types/solutions"
 import { useToast } from "../contexts/toast"
 import { COMMAND_KEY, isWindows } from "../utils/platform"
 
 interface ChatProps {
-  credits: number
   currentLanguage: string
-  setLanguage: (language: string) => void
 }
 
 interface ScreenshotAttachment {
@@ -98,31 +94,6 @@ SyntaxHighlighter.registerLanguage("rust", rust)
 
 const createId = (prefix: string) =>
   `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-
-const formatSolution = (solution: SavedSolutionData) => {
-  if (solution.display_text) return solution.display_text
-  const thoughts = solution.thoughts?.map((item) => `- ${item}`).join("\n") || ""
-  return `### 解题思路
-${thoughts}
-
-${solution.basic_code ? `### 基础解法\n\n\`\`\`\n${solution.basic_code}\n\`\`\`\n\n` : ""}### 优化解法
-
-\`\`\`
-${solution.code || ""}
-\`\`\`
-
-### 时间复杂度
-${solution.time_complexity || "未提供"}
-
-### 空间复杂度
-${solution.space_complexity || "未提供"}`
-}
-
-const formatProblem = (problem: ProblemStatementData) => `### 题目提取结果
-
-${problem.problem_statement || "未识别到题目描述"}
-
-${problem.constraints ? `### 约束条件\n${problem.constraints}\n\n` : ""}${problem.example_input ? `### 示例输入\n${problem.example_input}\n\n` : ""}${problem.example_output ? `### 示例输出\n${problem.example_output}\n\n` : ""}${problem.starter_code ? `### 识别到的代码模板\n\n\`\`\`\n${problem.starter_code}\n\`\`\`\n\n` : ""}${problem.required_signature ? `### 固定函数签名\n${problem.required_signature}` : ""}`.trim()
 
 function ProseContent({ text }: { text: string }) {
   return (
@@ -249,7 +220,7 @@ const downsampleToPcm16 = (input: Float32Array, sourceRate: number): ArrayBuffer
   return output.buffer
 }
 
-const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
+const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
   const { showToast } = useToast()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [sessionId, setSessionId] = useState("")
@@ -554,62 +525,11 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
     }
   }, [busy, interviewContextBusy, interviewContextEnabled, showToast])
 
-  const addRestoredRecord = useCallback(async (record: HistoryRecord) => {
-    if (busy) {
-      showToast("当前回答尚未结束", "请等待回答完成后再打开历史记录", "neutral")
-      return
-    }
-    const now = new Date().toISOString()
-    const screenshotPaths = record.screenshotPaths || []
-    const session = await window.electronAPI.newChatSession({
-      title: record.title,
-      messages: [
-        {
-          id: "history-user-" + record.id,
-          role: "user",
-          content: "已提交题目截图（" + screenshotPaths.length + " 张）",
-          images: screenshotPaths.map((path) => ({ path })),
-          createdAt: now,
-          status: "completed"
-        },
-        {
-          id: "history-assistant-" + record.id,
-          role: "assistant",
-          content: formatProblem(record.problem) + "\n\n" + formatSolution(record.solution),
-          images: [],
-          createdAt: now,
-          status: "completed"
-        }
-      ]
-    })
-    if (!session) return
-    setSessionId(session.id)
-    sessionIdRef.current = session.id
-    setSessionTitle(session.title || record.title)
-    setInput("")
-    setAttachments([])
-    setPhase("")
-    activeAssistantId.current = null
-    setMessages(await hydrateStoredMessages(session.messages))
-    const restoredLanguage = typeof record.language === "string" ? record.language.trim().toLowerCase() : ""
-    if (restoredLanguage && restoredLanguage !== "auto") {
-      setLanguage(restoredLanguage)
-      // A restored screenshot solution carries its detected language. Keep
-      // subsequent follow-up turns in the same session aligned with it, but
-      // never persist `auto` as if it were a manual choice.
-      void window.electronAPI.updateConfig({ language: restoredLanguage })
-    } else {
-      setLanguage("auto")
-    }
-  }, [busy, setLanguage, showToast])
   useEffect(() => {
     window.electronAPI.getScreenshots()
       .then((value) => setAttachments(normalizeScreenshots(value)))
       .catch(() => setAttachments([]))
 
-    const onHistorySelected = (event: Event) => {
-      void addRestoredRecord((event as CustomEvent<HistoryRecord>).detail)
-    }
     const onChatSessionSelected = (event: Event) => {
       if (busy) {
         showToast("当前回答尚未结束", "请等待回答完成后再切换会话", "neutral")
@@ -625,13 +545,11 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
       activeAssistantId.current = null
       void hydrateStoredMessages(session.messages).then(setMessages).catch(() => setMessages([]))
     }
-    window.addEventListener("history-record-selected", onHistorySelected)
     window.addEventListener("chat-session-selected", onChatSessionSelected)
     return () => {
-      window.removeEventListener("history-record-selected", onHistorySelected)
       window.removeEventListener("chat-session-selected", onChatSessionSelected)
     }
-  }, [addRestoredRecord, busy, showToast])
+  }, [busy, showToast])
 
   useEffect(() => {
     const cleanups = [

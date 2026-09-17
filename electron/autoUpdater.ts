@@ -5,19 +5,47 @@ import log from "electron-log"
 export function initAutoUpdater() {
   console.log("Initializing auto-updater...")
 
-  // Skip update checks in development
+  // Keep the renderer API registered in every environment. Update checks are
+  // disabled in development, but invoking the commands should still return a
+  // predictable result instead of throwing because no handler was registered.
+  ipcMain.handle("start-update", async () => {
+    if (!app.isPackaged) {
+      return { success: false, error: "Updates are disabled in development" }
+    }
+
+    try {
+      await autoUpdater.downloadUpdate()
+      console.log("Update download completed")
+      return { success: true }
+    } catch (error) {
+      console.error("Failed to start update:", error)
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      }
+    }
+  })
+
+  ipcMain.handle("install-update", () => {
+    if (!app.isPackaged) {
+      return { success: false, error: "Updates are disabled in development" }
+    }
+
+    console.log("Install update requested")
+    autoUpdater.quitAndInstall()
+    return { success: true }
+  })
+
+  // Skip update checks in development. Public GitHub releases do not require
+  // GH_TOKEN on the client side for checking or downloading updates.
   if (!app.isPackaged) {
     console.log("Skipping auto-updater in development mode")
     return
   }
 
-  if (!process.env.GH_TOKEN) {
-    console.error("GH_TOKEN environment variable is not set")
-    return
-  }
-
-  // Configure auto updater
-  autoUpdater.autoDownload = true
+  // Configure auto updater. The notification has an explicit download button,
+  // so do not download until the user requests it.
+  autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = true
   autoUpdater.allowDowngrade = true
   autoUpdater.allowPrerelease = true
@@ -37,7 +65,6 @@ export function initAutoUpdater() {
 
   autoUpdater.on("update-available", (info) => {
     console.log("Update available:", info)
-    // Notify renderer process about available update
     BrowserWindow.getAllWindows().forEach((window) => {
       console.log("Sending update-available to window")
       window.webContents.send("update-available", info)
@@ -54,7 +81,6 @@ export function initAutoUpdater() {
 
   autoUpdater.on("update-downloaded", (info) => {
     console.log("Update downloaded:", info)
-    // Notify renderer process that update is ready to install
     BrowserWindow.getAllWindows().forEach((window) => {
       console.log("Sending update-downloaded to window")
       window.webContents.send("update-downloaded", info)
@@ -88,22 +114,4 @@ export function initAutoUpdater() {
         console.error("Error checking for updates (interval):", err)
       })
   }, 60 * 60 * 1000)
-
-  // Handle IPC messages from renderer
-  ipcMain.handle("start-update", async () => {
-    console.log("Start update requested")
-    try {
-      await autoUpdater.downloadUpdate()
-      console.log("Update download completed")
-      return { success: true }
-    } catch (error) {
-      console.error("Failed to start update:", error)
-      return { success: false, error: error.message }
-    }
-  })
-
-  ipcMain.handle("install-update", () => {
-    console.log("Install update requested")
-    autoUpdater.quitAndInstall()
-  })
 }

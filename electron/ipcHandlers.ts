@@ -3,7 +3,6 @@
 import { BrowserWindow, clipboard, ipcMain, shell, type WebContents } from "electron"
 import { IIpcHandlerDeps } from "./main"
 import { configHelper } from "./ConfigHelper"
-import { historyHelper } from "./HistoryHelper"
 import type { VoiceSource } from "./VoiceRecognitionHelper"
 import { ensureInterviewContextFile, getInterviewContextStatus } from "./InterviewContextHelper"
 import type { ChatSessionSeed } from "./ChatService"
@@ -157,104 +156,12 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     }
   })
 
-  // Solution history is local-only. Text remains until manually deleted;
-  // screenshots are automatically removed after three days.
-  ipcMain.handle("get-history", () => historyHelper.list())
-
-  ipcMain.handle("restore-history", (_event, id: string) => {
-    const record = historyHelper.get(id)
-    if (!record) return { success: false, error: "History record not found" }
-    deps.setProblemInfo(record.problem)
-    deps.processingHelper?.setCurrentBasicCode(record.solution?.basic_code)
-    deps.processingHelper?.setCurrentSolutionCode(record.solution?.code)
-    deps.setView("solutions")
-    return { success: true, record }
-  })
-
-  ipcMain.handle("delete-history", (_event, id: string) => ({
-    success: historyHelper.delete(id)
-  }))
-  
-  ipcMain.handle("validate-api-key", async (_event, apiKey) => {
-    // First check the format
-    if (!configHelper.isValidApiKeyFormat(apiKey)) {
-      return { 
-        valid: false, 
-        error: "Invalid API key format. OpenAI API keys start with 'sk-'" 
-      };
-    }
-    
-    // Then test the API key with OpenAI
-    const result = await configHelper.testApiKey(apiKey);
-    return result;
-  })
-
-  // Credits handlers
-  ipcMain.handle("set-initial-credits", async (_event, credits: number) => {
-    const mainWindow = deps.getMainWindow()
-    if (!mainWindow) return
-
-    try {
-      // Set the credits in a way that ensures atomicity
-      await mainWindow.webContents.executeJavaScript(
-        `window.__CREDITS__ = ${credits}`
-      )
-      mainWindow.webContents.send("credits-updated", credits)
-    } catch (error) {
-      console.error("Error setting initial credits:", error)
-      throw error
-    }
-  })
-
-  ipcMain.handle("decrement-credits", async () => {
-    const mainWindow = deps.getMainWindow()
-    if (!mainWindow) return
-
-    try {
-      const currentCredits = await mainWindow.webContents.executeJavaScript(
-        "window.__CREDITS__"
-      )
-      if (currentCredits > 0) {
-        const newCredits = currentCredits - 1
-        await mainWindow.webContents.executeJavaScript(
-          `window.__CREDITS__ = ${newCredits}`
-        )
-        mainWindow.webContents.send("credits-updated", newCredits)
-      }
-    } catch (error) {
-      console.error("Error decrementing credits:", error)
-    }
-  })
-
-  // Screenshot queue handlers
-  ipcMain.handle("get-screenshot-queue", () => {
-    return deps.getScreenshotQueue()
-  })
-
-  ipcMain.handle("get-extra-screenshot-queue", () => {
-    return deps.getExtraScreenshotQueue()
-  })
-
   ipcMain.handle("delete-screenshot", async (event, path: string) => {
     return deps.deleteScreenshot(path)
   })
 
   ipcMain.handle("get-image-preview", async (event, path: string) => {
     return deps.getImagePreview(path)
-  })
-
-  // Screenshot processing handlers
-  ipcMain.handle("process-screenshots", async (_event, userRequest = "") => {
-    // Check for API key before processing
-    if (!configHelper.hasApiKey()) {
-      const mainWindow = deps.getMainWindow();
-      if (mainWindow) {
-        mainWindow.webContents.send(deps.PROCESSING_EVENTS.API_KEY_INVALID);
-      }
-      return;
-    }
-    
-    await deps.processingHelper?.processScreenshots(userRequest)
   })
 
   // Window dimension handlers
@@ -264,13 +171,6 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
       if (width && height) {
         deps.setWindowDimensions(width, height)
       }
-    }
-  )
-
-  ipcMain.handle(
-    "set-window-dimensions",
-    (event, width: number, height: number) => {
-      deps.setWindowDimensions(width, height)
     }
   )
 
@@ -324,36 +224,7 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     }
     return { error: "No main window available" }
   })
-
-  ipcMain.handle("take-screenshot", async () => {
-    try {
-      const screenshotPath = await deps.takeScreenshot()
-      const preview = await deps.getImagePreview(screenshotPath)
-      return { path: screenshotPath, preview }
-    } catch (error) {
-      console.error("Error taking screenshot:", error)
-      return { error: "Failed to take screenshot" }
-    }
-  })
-
-  // Auth-related handlers removed
-
-  ipcMain.handle("open-external-url", (event, url: string) => {
-    shell.openExternal(url)
-  })
   
-  // Open external URL handler
-  ipcMain.handle("openLink", (event, url: string) => {
-    try {
-      console.log(`Opening external URL: ${url}`);
-      shell.openExternal(url);
-      return { success: true };
-    } catch (error) {
-      console.error(`Error opening URL ${url}:`, error);
-      return { success: false, error: `Failed to open URL: ${error}` };
-    }
-  })
-
   // Settings portal handler
   ipcMain.handle("open-settings-portal", () => {
     const mainWindow = deps.getMainWindow();
@@ -387,43 +258,6 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     if (!mainWindow || mainWindow.isDestroyed()) return { success: false }
     mainWindow.close()
     return { success: true }
-  })
-
-  ipcMain.handle("reset-queues", async () => {
-    try {
-      deps.clearQueues()
-      return { success: true }
-    } catch (error) {
-      console.error("Error resetting queues:", error)
-      return { error: "Failed to reset queues" }
-    }
-  })
-
-  // Process screenshot handlers
-  ipcMain.handle("trigger-process-screenshots", async (_event, userRequest = "") => {
-    try {
-      const screenshotQueue = deps.getView() === "queue"
-        ? deps.getScreenshotQueue()
-        : deps.getExtraScreenshotQueue()
-      if (!screenshotQueue.length) {
-        return { success: false, error: "没有可提交的截图" }
-      }
-
-      // Check for API key before processing
-      if (!configHelper.hasApiKey()) {
-        const mainWindow = deps.getMainWindow();
-        if (mainWindow) {
-          mainWindow.webContents.send(deps.PROCESSING_EVENTS.API_KEY_INVALID);
-        }
-        return { success: false, error: "API key required" };
-      }
-      
-      await deps.processingHelper?.processScreenshots(userRequest)
-      return { success: true }
-    } catch (error) {
-      console.error("Error processing screenshots:", error)
-      return { error: "Failed to process screenshots" }
-    }
   })
 
   ipcMain.handle("chat-get-session", (_event, id?: string) => {
@@ -509,56 +343,13 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
       // Get main window and send reset events
       const mainWindow = deps.getMainWindow()
       if (mainWindow && !mainWindow.isDestroyed()) {
-        // Send reset events in sequence
         mainWindow.webContents.send("reset-view", { session: resetSession })
-        mainWindow.webContents.send("reset")
       }
 
       return { success: true }
     } catch (error) {
       console.error("Error triggering reset:", error)
       return { error: "Failed to trigger reset" }
-    }
-  })
-
-  // Window movement handlers
-  ipcMain.handle("trigger-move-left", () => {
-    try {
-      deps.moveWindowLeft()
-      return { success: true }
-    } catch (error) {
-      console.error("Error moving window left:", error)
-      return { error: "Failed to move window left" }
-    }
-  })
-
-  ipcMain.handle("trigger-move-right", () => {
-    try {
-      deps.moveWindowRight()
-      return { success: true }
-    } catch (error) {
-      console.error("Error moving window right:", error)
-      return { error: "Failed to move window right" }
-    }
-  })
-
-  ipcMain.handle("trigger-move-up", () => {
-    try {
-      deps.moveWindowUp()
-      return { success: true }
-    } catch (error) {
-      console.error("Error moving window up:", error)
-      return { error: "Failed to move window up" }
-    }
-  })
-
-  ipcMain.handle("trigger-move-down", () => {
-    try {
-      deps.moveWindowDown()
-      return { success: true }
-    } catch (error) {
-      console.error("Error moving window down:", error)
-      return { error: "Failed to move window down" }
     }
   })
   
@@ -578,12 +369,6 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
       
       // Delete it
       const result = await deps.deleteScreenshot(lastScreenshot)
-      
-      // Notify the renderer about the change
-      const mainWindow = deps.getMainWindow()
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send("screenshot-deleted", { path: lastScreenshot })
-      }
       
       return result
     } catch (error) {

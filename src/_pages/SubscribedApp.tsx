@@ -2,15 +2,11 @@ import { useEffect, useRef, type FC } from "react"
 import Chat from "./Chat"
 
 interface SubscribedAppProps {
-  credits: number
   currentLanguage: string
-  setLanguage: (language: string) => void
 }
 
 const SubscribedApp: FC<SubscribedAppProps> = ({
-  credits,
   currentLanguage,
-  setLanguage
 }) => {
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -23,9 +19,7 @@ const SubscribedApp: FC<SubscribedAppProps> = ({
   return (
     <div ref={containerRef} className="min-h-0">
       <Chat
-        credits={credits}
         currentLanguage={currentLanguage}
-        setLanguage={setLanguage}
       />
     </div>
   )
