@@ -16,9 +16,63 @@ const nodeGyp = path.join(
 );
 const nodeRoot = path.resolve(path.dirname(process.execPath), "..");
 
-const xcodePython = "/Applications/Xcode.app/Contents/Developer/usr/bin/python3";
+const XCODE_PYTHON = "/Applications/Xcode.app/Contents/Developer/usr/bin/python3";
+const COMMAND_LINE_TOOLS_DIR = "/Library/Developer/CommandLineTools";
+const CLT_PYTHON = path.join(COMMAND_LINE_TOOLS_DIR, "usr", "bin", "python3");
+
+/**
+ * 未接受 Xcode 许可时，make/clang 会以 exit 69 + 许可提示失败，
+ * 但 `xcodebuild -version` 仍返回 0，所以用 xcrun 探测才准确。
+ */
+function isXcodeToolchainUsable() {
+  try {
+    const probe = spawnSync("/usr/bin/xcrun", ["--find", "clang"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    return probe.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+/** 选一个真正可用的 python3（Xcode 自带的在许可未接受时不可用） */
+function resolvePython() {
+  const candidates = [
+    process.env.PYTHON,
+    isXcodeToolchainUsable() ? XCODE_PYTHON : undefined,
+    CLT_PYTHON,
+    "/opt/homebrew/bin/python3",
+    "/usr/local/bin/python3",
+    "python3"
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    try {
+      const probe = spawnSync(candidate, ["-c", "import sys; print(sys.version_info[0])"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"]
+      });
+      if (probe.status === 0) return candidate;
+    } catch {
+      // 继续尝试下一个候选
+    }
+  }
+
+  return undefined;
+}
+
 const env = { ...process.env };
-if (!env.PYTHON && fs.existsSync(xcodePython)) env.PYTHON = xcodePython;
+const python = resolvePython();
+if (python) env.PYTHON = python;
+
+if (!env.DEVELOPER_DIR && fs.existsSync(COMMAND_LINE_TOOLS_DIR) && !isXcodeToolchainUsable()) {
+  env.DEVELOPER_DIR = COMMAND_LINE_TOOLS_DIR;
+  console.warn(
+    "[build] 检测到 Xcode 许可未接受，改用 Command Line Tools 编译原生模块：",
+    COMMAND_LINE_TOOLS_DIR
+  );
+}
 
 const result = spawnSync(
   nodeGyp,
