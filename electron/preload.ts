@@ -428,7 +428,15 @@ const electronAPI = {
       ipcRenderer.removeListener("delete-last-screenshot", subscription)
     }
   },
-  deleteLastScreenshot: () => ipcRenderer.invoke("delete-last-screenshot")
+  deleteLastScreenshot: () => ipcRenderer.invoke("delete-last-screenshot"),
+  // 日志：前端日志转发到主进程统一落盘，便于按启动批次排查
+  logToMain: (level: string, message: string, meta?: unknown) => {
+    void ipcRenderer
+      .invoke("log-from-renderer", { level, message, meta })
+      .catch(() => undefined)
+  },
+  getLogInfo: () => ipcRenderer.invoke("get-log-info"),
+  openLogDirectory: () => ipcRenderer.invoke("open-log-directory")
 }
 
 // Before exposing the API

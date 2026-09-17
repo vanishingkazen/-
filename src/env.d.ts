@@ -154,6 +154,29 @@ interface ElectronAPI {
   installUpdate: () => void
   onUpdateAvailable: (callback: (info: any) => void) => () => void
   onUpdateDownloaded: (callback: (info: any) => void) => () => void
+  // 日志：前端日志转发与日志目录
+  logToMain: (
+    level: "error" | "warn" | "info" | "debug",
+    message: string,
+    meta?: unknown
+  ) => void
+  getLogInfo: () => Promise<{
+    runId: string
+    appVersion: string
+    mode: "development" | "production"
+    startedAt: string
+    logDirectory: string
+    mainLogPath: string
+    startupLogPath: string
+    fileLevel: string
+    consoleLevel: string
+    fileTransportEnabled: boolean
+  }>
+  openLogDirectory: () => Promise<{
+    success: boolean
+    path?: string
+    error?: string
+  }>
 }
 
 interface Window {

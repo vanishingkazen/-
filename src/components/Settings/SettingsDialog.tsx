@@ -11,6 +11,7 @@ import { Input } from "../ui/input";
 import { Button } from "../ui/button";
 import { useToast } from "../../contexts/toast";
 import { COMMAND_KEY } from "../../utils/platform";
+import { openLogDirectory } from "../../lib/logger";
 
 type APIProvider = "openai" | "openai-compatible" | "gemini" | "anthropic";
 
@@ -193,6 +194,7 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
   const [opacity, setOpacity] = useState(1);
   const savedOpacityRef = useRef(1);
   const [interviewContextPath, setInterviewContextPath] = useState("");
+  const [logPath, setLogPath] = useState("");
   const [speechApiKey, setSpeechApiKey] = useState("");
   const [speechWorkspaceId, setSpeechWorkspaceId] = useState("");
   const [speechRegion, setSpeechRegion] = useState("cn-beijing");
@@ -277,6 +279,24 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
         });
     }
   }, [open, showToast]);
+
+  // 日志路径：用于在设置面板里展示并一键打开日志目录
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    window.electronAPI
+      .getLogInfo()
+      .then((info) => {
+        if (!cancelled) setLogPath(info?.mainLogPath || "");
+      })
+      .catch((error: unknown) => {
+        console.error("Failed to load log info:", error);
+        if (!cancelled) setLogPath("");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   // Handle API provider change
   const handleProviderChange = (provider: APIProvider) => {
@@ -397,6 +417,13 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
 
   const opacityProgress = `${((opacity - 0.1) / 0.9) * 100}%`;
 
+  const openLogFolder = async () => {
+    const result = await openLogDirectory();
+    if (!result.success) {
+      showToast("无法打开日志目录", result.error || "请稍后重试", "error");
+    }
+  };
+
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent 
@@ -478,6 +505,29 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
             <p className="text-[11px] text-black/50">
               默认：~/Library/Application Support/steamgamecode/interview-context.md
             </p>
+          </div>
+
+          <div className="space-y-2 rounded-lg border border-black/10 bg-white/[0.52] p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <label className="text-sm font-medium text-black">运行日志</label>
+                <p className="mt-1 text-xs text-black/60">
+                  主进程和前端日志按启动批次写入同一个文件，遇到问题可以打开日志目录排查。
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="shrink-0 border-black/15 text-black hover:bg-black/[0.05]"
+                onClick={() => void openLogFolder()}
+              >
+                打开日志目录
+              </Button>
+            </div>
+            {logPath ? (
+              <p className="break-all font-mono text-[11px] text-black/50">{logPath}</p>
+            ) : null}
           </div>
 
           {/* API Provider Selection */}

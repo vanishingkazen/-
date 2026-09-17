@@ -1,15 +1,37 @@
 // ipcHandlers.ts
 
-import { clipboard, ipcMain, shell } from "electron"
+import { BrowserWindow, clipboard, ipcMain, shell, type WebContents } from "electron"
 import { IIpcHandlerDeps } from "./main"
 import { configHelper } from "./ConfigHelper"
 import { historyHelper } from "./HistoryHelper"
 import type { VoiceSource } from "./VoiceRecognitionHelper"
 import { ensureInterviewContextFile, getInterviewContextStatus } from "./InterviewContextHelper"
 import type { ChatSessionSeed } from "./ChatService"
+import { getLogInfo, logFromRenderer, openLogDirectory } from "./logger"
+
+/** 只接受本应用窗口发来的日志，避免其它渲染进程写入日志文件 */
+function isTrustedLogSender(sender: WebContents): boolean {
+  try {
+    return BrowserWindow.fromWebContents(sender) !== null
+  } catch {
+    return false
+  }
+}
 
 export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
   console.log("Initializing IPC handlers")
+
+  // 日志：前端转发、日志信息与日志目录
+  ipcMain.handle("log-from-renderer", (event, payload) => {
+    if (!isTrustedLogSender(event.sender)) return
+    const data = payload && typeof payload === "object" ? payload : {}
+    logFromRenderer(data.level, data.message, data.meta)
+    return { success: true }
+  })
+
+  ipcMain.handle("get-log-info", () => getLogInfo())
+
+  ipcMain.handle("open-log-directory", () => openLogDirectory())
 
   // Configuration handlers
   ipcMain.handle("get-config", () => {

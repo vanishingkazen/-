@@ -234,6 +234,34 @@ setContentProtection(true)
 - 显式打开 DevTools 后，调试窗口可能被捕获
 - Linux 通常没有与 macOS 等价的窗口内容保护
 
+## 日志
+
+主进程（后端）和渲染进程（前端）的日志会写入同一个日志文件。每次启动都会生成一个 `runId`，日志行按 `main:<runId>`、`renderer:<runId>`、`event:<runId>` 作用域区分，方便按启动批次对齐前后端日志。
+
+日志文件：
+
+```text
+macOS:   ~/Library/Logs/steamgamecode/main.log
+Windows: %APPDATA%\steamgamecode\logs\main.log
+Linux:   ~/.local/state/steamgamecode/logs/main.log
+```
+
+启动索引（每次启动追加一行，含 runId、版本、运行模式、pid、Electron 版本）：
+
+```text
+macOS:   ~/Library/Logs/steamgamecode/startup.log
+Windows: %APPDATA%\steamgamecode\logs\startup.log
+Linux:   ~/.local/state/steamgamecode/logs/startup.log
+```
+
+说明：
+
+- 启动时会打印一条启动横幅，包含版本、Electron/Chrome/Node 版本、平台、启动参数和日志路径。
+- 开发模式记录 `debug` 及以上，打包后记录 `info` 及以上；主日志超过 2MB 会自动滚动为 `main.old.log`，启动索引保留最近 200 次启动记录。
+- 前端未捕获错误、Promise 拒绝、页面卸载，以及渲染进程崩溃、页面加载失败、preload 报错、主进程未捕获异常都会写入日志。
+- 设置面板中的「运行日志 → 打开日志目录」可以直接打开日志文件所在目录。
+- 需要自定义日志目录时，设置环境变量 `STEAMGAMECODE_LOG_DIR`（例如 `STEAMGAMECODE_LOG_DIR=./logs npm run dev`）。
+
 ## 数据目录
 
 配置：
@@ -287,6 +315,7 @@ electron/
   ConfigHelper.ts                 配置读写和迁移
   HistoryHelper.ts                历史记录
   CrashRecovery.ts                 崩溃恢复和自动重启
+  logger.ts                       日志初始化、启动索引和前端日志落盘
 
 native/
   mac-command-interceptor/        macOS CGEventTap 原生模块
@@ -296,6 +325,7 @@ src/
   _pages/Chat.tsx                 主聊天界面
   components/Settings/            设置界面
   components/History/             历史记录界面
+  lib/logger.ts                   前端日志转发和错误捕获
   index.css                       全局样式和主题
 ```
 

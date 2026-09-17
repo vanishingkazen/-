@@ -13,6 +13,12 @@ import { VoiceRecognitionHelper } from "./VoiceRecognitionHelper"
 import { MouseShakeDetector } from "./MouseShakeDetector"
 import { ChatService } from "./ChatService"
 import { installCrashRecovery, requestAppRestart } from "./CrashRecovery"
+import {
+  initializeMainLogging,
+  logFromRendererConsole,
+  logShutdown,
+  mainLog
+} from "./logger"
 import * as dotenv from "dotenv"
 
 // Constants
@@ -24,6 +30,8 @@ if (process.platform === "win32") {
   app.setAppUserModelId("com.pandoraq.steamgamecode")
 }
 
+// 启动日志：越早初始化越好，之后主进程所有 console.* 也会写入日志文件
+initializeMainLogging()
 installCrashRecovery()
 
 const allowedExternalHosts = ["google.com", "supabase.co"]
@@ -330,10 +338,26 @@ async function createWindow(): Promise<void> {
 
   state.mainWindow = new BrowserWindow(windowSettings)
   state.mainWindow.setContentProtection(true)
+  mainLog.info(
+    `主窗口已创建 id=${state.mainWindow.id} size=${windowSettings.width}x${windowSettings.height}`
+  )
 
   // Add more detailed logging for window events
+  // 前端（渲染进程）控制台输出统一写入日志文件
+  state.mainWindow.webContents.on(
+    "console-message",
+    (_event, level, message, line, sourceId) => {
+      logFromRendererConsole(
+        level,
+        message,
+        sourceId ? `${sourceId}:${line}` : undefined
+      )
+    }
+  )
+
   state.mainWindow.webContents.on("did-finish-load", () => {
     console.log("Window finished loading")
+    mainLog.info("渲染进程加载完成", state.mainWindow?.webContents.getURL())
     // Chromium persists per-host zoom levels across sessions. Reset zoom on
     // every successful load so the window always matches the rendered content.
     state.mainWindow?.webContents.setZoomFactor(1)
@@ -605,6 +629,8 @@ function loadEnvVariables() {
 // Initialize application
 async function initializeApp() {
   try {
+    mainLog.info("应用就绪，开始初始化")
+
     // Set custom cache directory to prevent permission issues
     const appDataPath = path.join(app.getPath('appData'), 'interview-coder-v1')
     const sessionPath = path.join(appDataPath, 'session')
@@ -622,6 +648,7 @@ async function initializeApp() {
     app.setPath('sessionData', sessionPath)      
     app.setPath('temp', tempPath)
     app.setPath('cache', cachePath)
+    mainLog.info(`用户数据目录 ${appDataPath}`)
       
     loadEnvVariables()
 
@@ -636,6 +663,7 @@ async function initializeApp() {
       console.log("No API key found in configuration. User will need to set up.")
     }
     
+    mainLog.info("初始化功能模块")
     initializeHelpers()
     historyHelper.initialize()
     initializeIpcHandlers({
@@ -671,6 +699,7 @@ async function initializeApp() {
     })
     state.shortcutsHelper?.registerGlobalShortcuts()
     await createWindow()
+    mainLog.info("主窗口创建完成")
     state.mouseShakeDetector?.start()
 
     // Initialize auto-updater regardless of environment
@@ -681,6 +710,7 @@ async function initializeApp() {
       "mode"
     )
   } catch (error) {
+    mainLog.error("应用启动失败，准备重启:", error)
     requestAppRestart("startup-failure", error)
   }
 }
@@ -702,6 +732,7 @@ if (!gotTheLock) {
       argument.toLowerCase().startsWith("interview-coder://")
     )
     if (protocolUrl) console.log("Protocol URL received:", protocolUrl)
+    mainLog.info("检测到第二个实例启动", commandLine)
 
     if (!state.mainWindow) {
       void createWindow()
@@ -717,6 +748,7 @@ if (!gotTheLock) {
   })
 
   app.on("window-all-closed", () => {
+    mainLog.info("所有窗口已关闭")
     if (process.platform !== "darwin") {
       app.quit()
       state.mainWindow = null
@@ -725,6 +757,7 @@ if (!gotTheLock) {
 }
 
 app.on("activate", () => {
+  mainLog.info("应用被激活")
   if (BrowserWindow.getAllWindows().length === 0) {
     createWindow()
   }
@@ -828,5 +861,14 @@ export {
   setHasDebugged,
   getHasDebugged
 }
+
+// 退出日志
+app.on("before-quit", () => {
+  logShutdown("before-quit")
+})
+
+app.on("quit", () => {
+  logShutdown("quit")
+})
 
 app.whenReady().then(initializeApp)
