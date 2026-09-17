@@ -48,6 +48,48 @@ const isDeepSeekStreaming = (
   baseURL: string
 ): boolean => config.streamingEnabled !== false && isOfficialDeepSeekEndpoint(baseURL)
 
+const normalizeDetectedLanguage = (value: string): string | null => {
+  const normalized = value.trim().toLowerCase().replace(/[.#\s-]+/g, "")
+  const aliases: Record<string, string> = {
+    py: "python",
+    python: "python",
+    js: "javascript",
+    javascript: "javascript",
+    ts: "typescript",
+    typescript: "typescript",
+    java: "java",
+    cpp: "cpp",
+    cplusplus: "cpp",
+    c: "cpp",
+    csharp: "csharp",
+    cs: "csharp",
+    go: "golang",
+    golang: "golang",
+    rust: "rust",
+    swift: "swift",
+    kotlin: "kotlin",
+    ruby: "ruby",
+    sql: "sql",
+    r: "r"
+  }
+  return aliases[normalized] || null
+}
+
+const parseDetectedLanguage = (answer: string): { language: string | null; content: string } => {
+  const marker = answer.match(/^\s*\[LANGUAGE\s*:\s*([^\]\n]+)\]\s*/i)
+  if (marker) {
+    return {
+      language: normalizeDetectedLanguage(marker[1]),
+      content: answer.slice(marker[0].length).trim()
+    }
+  }
+  const fence = answer.match(/```\s*([a-zA-Z+#.-]+)/)
+  return {
+    language: fence ? normalizeDetectedLanguage(fence[1]) : null,
+    content: answer.trim()
+  }
+}
+
 export class ProcessingHelper {
   private deps: IProcessingHelperDeps
   private screenshotHelper: ScreenshotHelper
@@ -225,11 +267,23 @@ export class ProcessingHelper {
       }
       
       // Default fallback
-      return "python";
+      return "auto";
     } catch (error) {
       console.error("Error getting language:", error)
-      return "python"
+      return "auto"
     }
+  }
+
+  private getMaxOutputTokens(config: ReturnType<typeof configHelper.loadConfig>): number {
+    const requested = Math.min(
+      65536,
+      Math.max(1024, Math.floor(Number(config.maxOutputTokens) || 32768))
+    )
+
+    // GPT-4o currently exposes a smaller completion cap. Compatible endpoints
+    // are allowed to use the value selected by the user.
+    if (config.apiProvider === "openai") return Math.min(requested, 16384)
+    return requested
   }
 
   public async processScreenshots(userRequest = ""): Promise<void> {
@@ -340,6 +394,10 @@ export class ProcessingHelper {
         }
 
         const answer = result.data
+        if (result.language) {
+          configHelper.updateConfig({ language: result.language })
+          mainWindow.webContents.send("language-detected", { language: result.language })
+        }
         const title = answer
           .split(/\r?\n/)
           .map((line) => line.replace(/^#+\s*/, "").trim())
@@ -362,7 +420,7 @@ export class ProcessingHelper {
         historyHelper.saveSolution(
           problemInfo,
           solution,
-          config.language || "auto",
+          result.language || config.language || "auto",
           existingScreenshots
         )
 
@@ -512,11 +570,11 @@ export class ProcessingHelper {
     screenshots: Array<{ path: string; data: string }>,
     signal: AbortSignal,
     userRequest = ""
-  ): Promise<{ success: boolean; data?: string; error?: string }> {
+  ): Promise<{ success: boolean; data?: string; language?: string; error?: string }> {
     const config = configHelper.loadConfig()
     const mainWindow = this.deps.getMainWindow()
     const imageDataList = screenshots.map((screenshot) => screenshot.data)
-    const prompt = `分析截图中的题目信息，先判断语言，然后分析题干进行解题。${userRequest.trim() ? `\n\n用户补充要求：${userRequest.trim()}` : ""}`
+    const prompt = `分析截图中的题目信息，自动识别截图中的编程语言。请在最终回答第一行单独输出 [LANGUAGE: <language>]，language 只能使用 python、javascript、typescript、java、cpp、csharp、golang、rust、swift、kotlin、ruby、sql、r；如果不是编程题则输出 [LANGUAGE: auto]。从第二行开始再输出正常解题内容，不要解释这个标记。${userRequest.trim() ? `\n\n用户补充要求：${userRequest.trim()}` : ""}`
 
     mainWindow?.webContents.send("processing-status", {
       message: "正在使用视觉模型直接解题...",
@@ -543,7 +601,7 @@ export class ProcessingHelper {
                 ]
               }
             ],
-            max_tokens: config.apiProvider === "openai-compatible" ? 8192 : 4000,
+            max_tokens: this.getMaxOutputTokens(config),
             temperature: 0.1
           },
           { signal }
@@ -567,7 +625,7 @@ export class ProcessingHelper {
             ],
             generationConfig: {
               temperature: 0.1,
-              maxOutputTokens: 8192
+              maxOutputTokens: this.getMaxOutputTokens(config)
             }
           },
           { signal }
@@ -581,7 +639,7 @@ export class ProcessingHelper {
         const response = await this.anthropicClient.messages.create(
           {
             model: config.extractionModel || "claude-3-7-sonnet-20250219",
-            max_tokens: 8192,
+            max_tokens: this.getMaxOutputTokens(config),
             temperature: 0.1,
             messages: [
               {
@@ -610,7 +668,8 @@ export class ProcessingHelper {
       }
 
       if (!answer) throw new Error("视觉模型没有返回解答内容")
-      return { success: true, data: answer }
+      const parsed = parseDetectedLanguage(answer)
+      return { success: true, data: parsed.content, language: parsed.language || undefined }
     } catch (error: any) {
       if (error?.name === "AbortError" || axios.isCancel(error)) {
         return { success: false, error: "视觉模型解题已取消" }
@@ -742,7 +801,7 @@ ${basicCodeForDebugging}
         const debugResponse = await this.openaiClient.chat.completions.create({
           model: config.debuggingModel || "gpt-4o",
           messages: messages,
-          max_tokens: config.apiProvider === "openai-compatible" ? 32768 : 4000,
+          max_tokens: this.getMaxOutputTokens(config),
           temperature: 0.2
         });
         
@@ -795,7 +854,7 @@ ${basicCodeForDebugging}
               contents: geminiMessages,
               generationConfig: {
                 temperature: 0.2,
-                maxOutputTokens: 4000
+                maxOutputTokens: this.getMaxOutputTokens(config)
               }
             },
             { signal }
@@ -855,7 +914,7 @@ ${basicCodeForDebugging}
 
           const response = await this.anthropicClient.messages.create({
             model: config.debuggingModel || "claude-3-7-sonnet-20250219",
-            max_tokens: 4000,
+            max_tokens: this.getMaxOutputTokens(config),
             messages: messages,
             temperature: 0.2
           });
@@ -1068,7 +1127,11 @@ ${content}
 
     const historyMode = config.interviewContextEnabled ? "interview" : "problem"
     const modeHistory = this.chatHistories[historyMode]
-    const priorMessages = modeHistory.slice(-10)
+    const contextMessageLimit = Math.min(
+      100,
+      Math.max(4, Math.floor(Number(config.contextMessageLimit) || 30))
+    )
+    const priorMessages = modeHistory.slice(-contextMessageLimit)
     mainWindow.webContents.send("processing-status", {
       stage: "followup",
       requestId,
@@ -1103,10 +1166,7 @@ ${content}
             model: config.solutionModel || "gpt-4o",
             messages: chatMessages,
             temperature: 0.2,
-            max_tokens:
-              this.solutionOpenAIClient || config.apiProvider === "openai-compatible"
-                ? 32768
-                : 4000,
+            max_tokens: this.getMaxOutputTokens(config),
             ...thinkingOptions
           }
 
@@ -1172,7 +1232,10 @@ ${content}
                 ]
               }
             ],
-            generationConfig: { temperature: 0.2, maxOutputTokens: 4000 }
+            generationConfig: {
+              temperature: 0.2,
+              maxOutputTokens: this.getMaxOutputTokens(config)
+            }
           },
           { signal: controller.signal }
         )
@@ -1182,7 +1245,7 @@ ${content}
         if (!this.anthropicClient) throw new Error("Anthropic API key 尚未配置")
         const response = await this.anthropicClient.messages.create({
           model: config.solutionModel || "claude-3-7-sonnet-20250219",
-          max_tokens: 4000,
+          max_tokens: this.getMaxOutputTokens(config),
           temperature: 0.2,
           system:
             chatSystemPrompt,
@@ -1204,7 +1267,7 @@ ${content}
         { role: "user", content },
         { role: "assistant", content: responseContent }
       )
-      this.chatHistories[historyMode] = modeHistory.slice(-12)
+      this.chatHistories[historyMode] = modeHistory.slice(-contextMessageLimit)
 
       mainWindow.webContents.send("chat-stream", {
         requestId,

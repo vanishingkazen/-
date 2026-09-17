@@ -16,6 +16,7 @@ import { ToastContext } from "./contexts/toast"
 import { WelcomeScreen } from "./components/WelcomeScreen"
 import { SettingsDialog } from "./components/Settings/SettingsDialog"
 import { HistoryDialog } from "./components/History/HistoryDialog"
+import { ChatSessionDialog } from "./components/History/ChatSessionDialog"
 
 // Create a React Query client
 const queryClient = new QueryClient({
@@ -41,7 +42,7 @@ function App() {
     variant: "neutral" as "neutral" | "success" | "error"
   })
   const [credits, setCredits] = useState<number>(999) // Unlimited credits
-  const [currentLanguage, setCurrentLanguage] = useState<string>("python")
+  const [currentLanguage, setCurrentLanguage] = useState<string>("auto")
   const [isInitialized, setIsInitialized] = useState(false)
   const [hasApiKey, setHasApiKey] = useState(false)
   const [apiKeyDialogOpen, setApiKeyDialogOpen] = useState(false)
@@ -49,11 +50,17 @@ function App() {
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [isHistoryOpen, setIsHistoryOpen] = useState(false)
+  const [isChatSessionsOpen, setIsChatSessionsOpen] = useState(false)
 
   useEffect(() => {
     const openHistory = () => setIsHistoryOpen(true)
+    const openChatSessions = () => setIsChatSessionsOpen(true)
     window.addEventListener("open-history", openHistory)
-    return () => window.removeEventListener("open-history", openHistory)
+    window.addEventListener("open-chat-sessions", openChatSessions)
+    return () => {
+      window.removeEventListener("open-history", openHistory)
+      window.removeEventListener("open-chat-sessions", openChatSessions)
+    }
   }, [])
 
   // Set unlimited credits
@@ -170,7 +177,7 @@ function App() {
         if (config && config.language) {
           updateLanguage(config.language)
         } else {
-          updateLanguage("python")
+          updateLanguage("auto")
         }
         
         // Model settings are now managed through the settings dialog
@@ -216,6 +223,12 @@ function App() {
       setIsInitialized(false)
     }
   }, [updateCredits, updateLanguage, markInitialized, showToast])
+
+  useEffect(() => {
+    return window.electronAPI.onLanguageDetected(({ language }) => {
+      updateLanguage(language)
+    })
+  }, [updateLanguage])
 
   // API Key dialog management
   const handleOpenSettings = useCallback(() => {
@@ -278,6 +291,7 @@ function App() {
             onOpenChange={handleCloseSettings} 
           />
           <HistoryDialog open={isHistoryOpen} onOpenChange={setIsHistoryOpen} />
+          <ChatSessionDialog open={isChatSessionsOpen} onOpenChange={setIsChatSessionsOpen} />
           
           <Toast
             open={toastState.open}

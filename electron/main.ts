@@ -11,6 +11,7 @@ import { historyHelper } from "./HistoryHelper"
 import { ensureInterviewContextFile } from "./InterviewContextHelper"
 import { VoiceRecognitionHelper } from "./VoiceRecognitionHelper"
 import { MouseShakeDetector } from "./MouseShakeDetector"
+import { ChatService } from "./ChatService"
 import { installCrashRecovery, requestAppRestart } from "./CrashRecovery"
 import * as dotenv from "dotenv"
 
@@ -19,6 +20,9 @@ const isDev = process.env.NODE_ENV === "development"
 const appIconPath = path.join(app.getAppPath(), "assets", "icons", "steam.svg")
 
 app.setName("steamgamecode")
+if (process.platform === "win32") {
+  app.setAppUserModelId("com.pandoraq.steamgamecode")
+}
 
 installCrashRecovery()
 
@@ -75,6 +79,7 @@ const state = {
   processingHelper: null as ProcessingHelper | null,
   voiceRecognitionHelper: null as VoiceRecognitionHelper | null,
   mouseShakeDetector: null as MouseShakeDetector | null,
+  chatService: null as ChatService | null,
 
   // View and state management
   view: "queue" as "queue" | "solutions" | "debug",
@@ -123,6 +128,7 @@ export interface IShortcutsHelperDeps {
   takeScreenshot: () => Promise<string>
   getImagePreview: (filepath: string) => Promise<string>
   processingHelper: ProcessingHelper | null
+  chatService: ChatService | null
   voiceRecognitionHelper: VoiceRecognitionHelper | null
   getScreenshotQueue: () => string[]
   getExtraScreenshotQueue: () => string[]
@@ -148,6 +154,7 @@ export interface IIpcHandlerDeps {
   ) => Promise<{ success: boolean; error?: string }>
   getImagePreview: (filepath: string) => Promise<string>
   processingHelper: ProcessingHelper | null
+  chatService: ChatService | null
   voiceRecognitionHelper: VoiceRecognitionHelper | null
   PROCESSING_EVENTS: typeof state.PROCESSING_EVENTS
   takeScreenshot: () => Promise<string>
@@ -183,11 +190,15 @@ function initializeHelpers() {
     getHasDebugged,
     PROCESSING_EVENTS: state.PROCESSING_EVENTS
   } as IProcessingHelperDeps)
+
+  state.chatService = new ChatService({ getMainWindow })
+
   state.shortcutsHelper = new ShortcutsHelper({
     getMainWindow,
     takeScreenshot,
     getImagePreview,
     processingHelper: state.processingHelper,
+    chatService: state.chatService,
     voiceRecognitionHelper: state.voiceRecognitionHelper,
     getScreenshotQueue,
     getExtraScreenshotQueue,
@@ -225,37 +236,16 @@ function initializeHelpers() {
 
 // Auth callback handler
 
-// Register the interview-coder protocol
+// Register the interview-coder protocol. Packaged Windows builds must use
+// the executable itself without passing a script path as an argument.
 if (process.platform === "darwin") {
   app.setAsDefaultProtocolClient("interview-coder")
-} else {
-  app.setAsDefaultProtocolClient("interview-coder", process.execPath, [
-    path.resolve(process.argv[1] || "")
-  ])
-}
-
-// Handle the protocol. In this case, we choose to show an Error Box.
-if (process.defaultApp && process.argv.length >= 2) {
+} else if (process.defaultApp && process.argv[1]) {
   app.setAsDefaultProtocolClient("interview-coder", process.execPath, [
     path.resolve(process.argv[1])
   ])
-}
-
-// Force Single Instance Lock
-const gotTheLock = app.requestSingleInstanceLock()
-
-if (!gotTheLock) {
-  app.quit()
 } else {
-  app.on("second-instance", (event, commandLine) => {
-    // Someone tried to run a second instance, we should focus our window.
-    if (state.mainWindow) {
-      if (state.mainWindow.isMinimized()) state.mainWindow.restore()
-      showMainWindow()
-
-      // Protocol handler removed - no longer using auth callbacks
-    }
-  })
+  app.setAsDefaultProtocolClient("interview-coder")
 }
 
 // Auth callback removed as we no longer use Supabase authentication
@@ -330,11 +320,11 @@ async function createWindow(): Promise<void> {
     opacity: 1.0,  // Start with full opacity
     backgroundColor: "#00000000",
     focusable: true,
-    skipTaskbar: true,
-    type: "panel",
+    skipTaskbar: process.platform === "darwin",
+    type: process.platform === "darwin" ? "panel" : undefined,
     paintWhenInitiallyHidden: true,
-    titleBarStyle: "hidden",
-    enableLargerThanScreen: true,
+    titleBarStyle: process.platform === "darwin" ? "hidden" : undefined,
+    enableLargerThanScreen: process.platform === "darwin",
     movable: true
   }
 
@@ -399,10 +389,16 @@ async function createWindow(): Promise<void> {
 
   // Enhanced screen capture resistance
 
-  state.mainWindow.setVisibleOnAllWorkspaces(true, {
-    visibleOnFullScreen: true
-  })
-  state.mainWindow.setAlwaysOnTop(true, "screen-saver", 1)
+  if (process.platform !== "win32") {
+    state.mainWindow.setVisibleOnAllWorkspaces(true, {
+      visibleOnFullScreen: true
+    })
+  }
+  state.mainWindow.setAlwaysOnTop(
+      true,
+      process.platform === "darwin" ? "screen-saver" : "floating",
+      1
+    )
 
   // Additional screen capture resistance settings
   if (process.platform === "darwin") {
@@ -497,10 +493,16 @@ function showMainWindow(): void {
       });
     }
     state.mainWindow.setIgnoreMouseEvents(false);
-    state.mainWindow.setAlwaysOnTop(true, "screen-saver", 1);
-    state.mainWindow.setVisibleOnAllWorkspaces(true, {
-      visibleOnFullScreen: true
-    });
+    state.mainWindow.setAlwaysOnTop(
+      true,
+      process.platform === "darwin" ? "screen-saver" : "floating",
+      1
+    );
+    if (process.platform !== "win32") {
+      state.mainWindow.setVisibleOnAllWorkspaces(true, {
+        visibleOnFullScreen: true
+      });
+    }
     state.mainWindow.setContentProtection(true);
     state.mainWindow.setOpacity(0); // Set opacity to 0 before showing
     state.mainWindow.showInactive(); // Use showInactive instead of show+focus
@@ -644,6 +646,7 @@ async function initializeApp() {
       deleteScreenshot,
       getImagePreview,
       processingHelper: state.processingHelper,
+      chatService: state.chatService,
       voiceRecognitionHelper: state.voiceRecognitionHelper,
       PROCESSING_EVENTS: state.PROCESSING_EVENTS,
       takeScreenshot,
@@ -688,23 +691,31 @@ app.on("open-url", (event, url) => {
   event.preventDefault()
 })
 
-// Handle second instance (removed auth callback handling)
-app.on("second-instance", (event, commandLine) => {
-  console.log("second-instance event received:", commandLine)
-  
-  // Focus or create the main window
-  if (!state.mainWindow) {
-    createWindow()
-  } else {
-    if (state.mainWindow.isMinimized()) state.mainWindow.restore()
-    showMainWindow()
-  }
-})
+// Prevent multiple instances and handle protocol/second-instance launches.
+const gotTheLock = app.requestSingleInstanceLock()
 
-// Prevent multiple instances of the app
-if (!app.requestSingleInstanceLock()) {
+if (!gotTheLock) {
   app.quit()
 } else {
+  app.on("second-instance", (_event, commandLine) => {
+    const protocolUrl = commandLine.find((argument) =>
+      argument.toLowerCase().startsWith("interview-coder://")
+    )
+    if (protocolUrl) console.log("Protocol URL received:", protocolUrl)
+
+    if (!state.mainWindow) {
+      void createWindow()
+      return
+    }
+
+    if (state.mainWindow.isMinimized()) state.mainWindow.restore()
+    showMainWindow()
+    if (process.platform === "win32") {
+      state.mainWindow.show()
+      state.mainWindow.focus()
+    }
+  })
+
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") {
       app.quit()

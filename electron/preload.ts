@@ -43,6 +43,8 @@ const electronAPI = {
   getScreenshots: () => ipcRenderer.invoke("get-screenshots"),
   deleteScreenshot: (path: string) =>
     ipcRenderer.invoke("delete-screenshot", path),
+  minimizeMainWindow: () => ipcRenderer.invoke("minimize-main-window"),
+  closeMainWindow: () => ipcRenderer.invoke("close-main-window"),
   toggleMainWindow: async () => {
     console.log("toggleMainWindow called from preload")
     try {
@@ -65,8 +67,8 @@ const electronAPI = {
       ipcRenderer.removeListener("screenshot-taken", subscription)
     }
   },
-  onResetView: (callback: () => void) => {
-    const subscription = () => callback()
+  onResetView: (callback: (data?: { session?: unknown }) => void) => {
+    const subscription = (_event: unknown, data?: { session?: unknown }) => callback(data)
     ipcRenderer.on("reset-view", subscription)
     return () => {
       ipcRenderer.removeListener("reset-view", subscription)
@@ -189,22 +191,41 @@ const electronAPI = {
     ipcRenderer.on("processing-status", subscription)
     return () => ipcRenderer.removeListener("processing-status", subscription)
   },
+  onLanguageDetected: (callback: (data: { language: string }) => void) => {
+    const subscription = (_: any, data: { language: string }) => callback(data)
+    ipcRenderer.on("language-detected", subscription)
+    return () => ipcRenderer.removeListener("language-detected", subscription)
+  },
+  onChatStarted: (
+    callback: (data: { sessionId: string; requestId: string; userMessage: any }) => void
+  ) => {
+    const subscription = (_: any, data: any) => callback(data)
+    ipcRenderer.on("chat-started", subscription)
+    return () => ipcRenderer.removeListener("chat-started", subscription)
+  },
   onChatStream: (
-    callback: (data: { requestId: string; content: string; done: boolean }) => void
+    callback: (data: { requestId: string; sessionId: string; content: string; done: boolean }) => void
   ) => {
     const subscription = (_: any, data: any) => callback(data)
     ipcRenderer.on("chat-stream", subscription)
     return () => ipcRenderer.removeListener("chat-stream", subscription)
   },
+  onChatContextCompressed: (
+    callback: (data: { sessionId: string; summary: string }) => void
+  ) => {
+    const subscription = (_: any, data: any) => callback(data)
+    ipcRenderer.on("chat-context-compressed", subscription)
+    return () => ipcRenderer.removeListener("chat-context-compressed", subscription)
+  },
   onChatSuccess: (
-    callback: (data: { requestId: string; content: string }) => void
+    callback: (data: { requestId: string; sessionId: string; content: string; session: unknown }) => void
   ) => {
     const subscription = (_: any, data: any) => callback(data)
     ipcRenderer.on("chat-success", subscription)
     return () => ipcRenderer.removeListener("chat-success", subscription)
   },
   onChatError: (
-    callback: (data: { requestId: string; error: string }) => void
+    callback: (data: { requestId: string; sessionId: string; error: string }) => void
   ) => {
     const subscription = (_: any, data: any) => callback(data)
     ipcRenderer.on("chat-error", subscription)
@@ -222,8 +243,17 @@ const electronAPI = {
   triggerScreenshot: () => ipcRenderer.invoke("trigger-screenshot"),
   triggerProcessScreenshots: (userRequest = "") =>
     ipcRenderer.invoke("trigger-process-screenshots", userRequest),
-  sendChatMessage: (payload: { requestId: string; message: string }) =>
-    ipcRenderer.invoke("chat-send-message", payload),
+  getChatSession: (id?: string) => ipcRenderer.invoke("chat-get-session", id),
+  newChatSession: (seed?: unknown) => ipcRenderer.invoke("chat-new-session", seed),
+  selectChatSession: (id: string) => ipcRenderer.invoke("chat-select-session", id),
+  listChatSessions: () => ipcRenderer.invoke("chat-list-sessions"),
+  deleteChatSession: (id: string) => ipcRenderer.invoke("chat-delete-session", id),
+  sendChatMessage: (payload: {
+    requestId: string
+    sessionId?: string
+    text: string
+    images?: Array<{ path: string; preview?: string }>
+  }) => ipcRenderer.invoke("chat-send-message", payload),
   cancelChat: () => ipcRenderer.invoke("chat-cancel"),
   writeClipboardText: (text: string): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke("clipboard-write", text),
@@ -356,6 +386,9 @@ const electronAPI = {
     extractionModel?: string;
     solutionModel?: string;
     debuggingModel?: string;
+    maxOutputTokens?: number;
+    contextMessageLimit?: number;
+    contextWindowTokens?: number;
     language?: string;
     opacity?: number;
     speechApiKey?: string;

@@ -1,4 +1,5 @@
 const { spawnSync } = require("node:child_process");
+const fs = require("node:fs");
 const path = require("node:path");
 
 if (process.platform !== "darwin") {
@@ -15,10 +16,14 @@ const nodeGyp = path.join(
 );
 const nodeRoot = path.resolve(path.dirname(process.execPath), "..");
 
+const xcodePython = "/Applications/Xcode.app/Contents/Developer/usr/bin/python3";
+const env = { ...process.env };
+if (!env.PYTHON && fs.existsSync(xcodePython)) env.PYTHON = xcodePython;
+
 const result = spawnSync(
   nodeGyp,
   ["rebuild", "--directory", __dirname, `--nodedir=${nodeRoot}`],
-  { cwd: root, stdio: "inherit" }
+  { cwd: root, stdio: "inherit", env }
 );
 
 if (result.error) {

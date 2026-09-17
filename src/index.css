@@ -50,6 +50,45 @@ body {
   backdrop-filter: blur(18px);
 }
 
+.pandora-chat-header.windows-draggable {
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.pandora-chat-header.windows-draggable button,
+.pandora-chat-header.windows-draggable input,
+.pandora-chat-header.windows-draggable select,
+.pandora-chat-header.windows-draggable textarea {
+  -webkit-app-region: no-drag;
+}
+
+.chat-window-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 3px;
+}
+
+.chat-window-button {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 6px;
+  color: rgba(17, 24, 39, 0.62);
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.chat-window-button:hover {
+  background: rgba(15, 23, 42, 0.08);
+  color: rgba(17, 24, 39, 0.92);
+}
+
+.chat-window-button.close:hover {
+  background: rgba(220, 38, 38, 0.12);
+  color: rgb(185, 28, 28);
+}
+
 .chat-icon-button {
   display: inline-flex;
   height: 30px;
@@ -73,36 +112,6 @@ body {
   border-color: rgba(248, 113, 113, 0.32);
   background: rgba(239, 68, 68, 0.14);
   color: rgba(220, 38, 38, 0.95);
-}
-
-.chat-language-menu {
-  position: absolute;
-  top: 35px;
-  right: 0;
-  width: 138px;
-  overflow: hidden;
-  border: 1px solid var(--pandora-border-strong);
-  border-radius: 9px;
-  background: rgba(255, 255, 255, 0.96);
-  padding: 4px;
-  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.16);
-}
-
-.chat-language-menu button {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  justify-content: space-between;
-  border-radius: 6px;
-  padding: 7px 9px;
-  color: var(--pandora-foreground-muted);
-  font-size: 12px;
-}
-
-.chat-language-menu button:hover,
-.chat-language-menu button.selected {
-  background: rgba(15, 23, 42, 0.06);
-  color: var(--pandora-foreground);
 }
 
 .pandora-message-list {

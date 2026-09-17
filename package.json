@@ -5,7 +5,7 @@
   "scripts": {
     "clean": "npx rimraf dist dist-electron",
     "dev": "npm run build:native:mac && cross-env NODE_ENV=development npm run clean && concurrently \"tsc -w -p tsconfig.electron.json\" \"vite\" \"wait-on -t 30000 http://localhost:54321 && electron ./dist-electron/main.js\"",
-    "test": "echo \"No tests defined. Please contribute if you like\" && exit 0",
+    "test": "node --test --test-concurrency=1 tests/chat-service.test.cjs tests/chat-stability.test.cjs",
     "lint": "npx eslint .",
     "start": "npm run build:native:mac && cross-env NODE_ENV=development concurrently \"tsc -p tsconfig.electron.json\" \"vite\" \"wait-on -t 30000 http://localhost:54321 && electron ./dist-electron/main.js\"",
     "build": "cross-env NODE_ENV=production npm run clean && npm run build:native:mac && vite build && tsc -p tsconfig.electron.json",
@@ -14,7 +14,10 @@
     "package-mac": "npm run build && electron-builder build --mac",
     "package-win": "npm run build && electron-builder build --win",
     "build:native:mac": "node native/mac-command-interceptor/build.js",
-    "postinstall": "node native/mac-command-interceptor/build.js"
+    "postinstall": "node native/mac-command-interceptor/build.js",
+    "test:chat": "node --test --test-concurrency=1 tests/chat-service.test.cjs tests/chat-stability.test.cjs",
+    "test:chat:live": "node tests/chat-live-smoke.cjs",
+    "test:chat:stability": "node --test --test-concurrency=1 tests/chat-stability.test.cjs"
   },
   "build": {
     "appId": "com.pandoraq.steamgamecode",

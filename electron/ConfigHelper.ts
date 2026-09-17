@@ -20,6 +20,9 @@ export interface Config {
   solutionModel: string;
   debuggingModel: string;
   streamingEnabled: boolean;
+  maxOutputTokens: number;
+  contextMessageLimit: number;
+  contextWindowTokens: number;
   speechApiKey: string;
   speechWorkspaceId: string;
   speechRegion: string;
@@ -43,13 +46,19 @@ export class ConfigHelper extends EventEmitter {
     solutionModel: "gemini-2.0-flash",
     debuggingModel: "gemini-2.0-flash",
     streamingEnabled: true,
+    maxOutputTokens: 32768,
+    contextMessageLimit: 30,
+    contextWindowTokens: 128000,
     speechApiKey: "",
     speechWorkspaceId: "",
     speechRegion: "cn-beijing",
     speechModel: "qwen-audio-3.0-asr-flash-streaming",
     interviewContextEnabled: false,
     interviewContextPath: DEFAULT_INTERVIEW_CONTEXT_PATH,
-    language: "python",
+    // The language is inferred from the screenshot/model response.  Keep
+    // `auto` as the persisted default so a previous session cannot silently
+    // force all new screenshots to Python.
+    language: "auto",
     opacity: 1.0
   };
 
@@ -183,6 +192,18 @@ export class ConfigHelper extends EventEmitter {
         if (config.debuggingModel) {
           config.debuggingModel = this.sanitizeModelSelection(config.debuggingModel, config.apiProvider);
         }
+        config.maxOutputTokens = Math.min(
+          65536,
+          Math.max(1024, Number(config.maxOutputTokens) || this.defaultConfig.maxOutputTokens)
+        )
+        config.contextMessageLimit = Math.min(
+          100,
+          Math.max(4, Math.floor(Number(config.contextMessageLimit) || this.defaultConfig.contextMessageLimit))
+        )
+        config.contextWindowTokens = Math.min(
+          1000000,
+          Math.max(8192, Math.floor(Number(config.contextWindowTokens) || this.defaultConfig.contextWindowTokens))
+        )
         
         return {
           ...this.defaultConfig,
@@ -276,6 +297,24 @@ export class ConfigHelper extends EventEmitter {
       if (updates.debuggingModel) {
         updates.debuggingModel = this.sanitizeModelSelection(updates.debuggingModel, provider);
       }
+      if (updates.maxOutputTokens !== undefined) {
+        updates.maxOutputTokens = Math.min(
+          65536,
+          Math.max(1024, Math.floor(Number(updates.maxOutputTokens) || this.defaultConfig.maxOutputTokens))
+        )
+      }
+      if (updates.contextMessageLimit !== undefined) {
+        updates.contextMessageLimit = Math.min(
+          100,
+          Math.max(4, Math.floor(Number(updates.contextMessageLimit) || this.defaultConfig.contextMessageLimit))
+        )
+      }
+      if (updates.contextWindowTokens !== undefined) {
+        updates.contextWindowTokens = Math.min(
+          1000000,
+          Math.max(8192, Math.floor(Number(updates.contextWindowTokens) || this.defaultConfig.contextWindowTokens))
+        )
+      }
       
       const newConfig = { ...currentConfig, ...updates };
       this.saveConfig(newConfig);
@@ -286,6 +325,7 @@ export class ConfigHelper extends EventEmitter {
           updates.extractionModel !== undefined || updates.solutionApiKey !== undefined ||
           updates.solutionBaseURL !== undefined || updates.solutionModel !== undefined ||
           updates.debuggingModel !== undefined || updates.streamingEnabled !== undefined ||
+          updates.maxOutputTokens !== undefined || updates.contextMessageLimit !== undefined || updates.contextWindowTokens !== undefined ||
           updates.language !== undefined ||
           updates.speechApiKey !== undefined || updates.speechWorkspaceId !== undefined ||
           updates.speechRegion !== undefined || updates.speechModel !== undefined) {
@@ -362,7 +402,7 @@ export class ConfigHelper extends EventEmitter {
    */
   public getLanguage(): string {
     const config = this.loadConfig();
-    return config.language || "python";
+    return config.language || "auto";
   }
 
   /**

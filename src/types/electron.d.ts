@@ -27,10 +27,11 @@ export interface ElectronAPI {
   onScreenshotTaken: (
     callback: (data: { path: string; preview: string }) => void
   ) => () => void
-  onResetView: (callback: () => void) => () => void
+  onResetView: (callback: (data?: { session?: import("./chat").ChatSession }) => void) => () => void
   onFocusChatInput: (callback: () => void) => () => void
   onNewChatSession: (callback: () => void) => () => void
   onDeleteLastScreenshot: (callback: () => void) => () => void
+  deleteLastScreenshot: () => Promise<{ success: boolean; error?: string }>
   onScrollChat: (callback: (data: { direction: "up" | "down" }) => void) => () => void
   onSolutionStart: (callback: (data?: { questionMode?: "coding" | "iq" }) => void) => () => void
   onDebugStart: (callback: () => void) => () => void
@@ -50,28 +51,52 @@ export interface ElectronAPI {
     stage?: string
     requestId?: string
   }) => void) => () => void
+  onLanguageDetected: (callback: (data: { language: string }) => void) => () => void
+  onChatStarted: (callback: (data: {
+    sessionId: string
+    requestId: string
+    userMessage: import("./chat").ChatMessage
+  }) => void) => () => void
   onChatStream: (callback: (data: {
     requestId: string
+    sessionId: string
     content: string
     done: boolean
   }) => void) => () => void
+  onChatContextCompressed: (callback: (data: { sessionId: string; summary: string }) => void) => () => void
   onChatSuccess: (callback: (data: {
     requestId: string
+    sessionId: string
     content: string
+    session: import("./chat").ChatSession
   }) => void) => () => void
   onChatError: (callback: (data: {
     requestId: string
+    sessionId: string
     error: string
   }) => void) => () => void
   onUnauthorized: (callback: () => void) => () => void
   onDebugError: (callback: (error: string) => void) => () => void
+  onShowSettings: (callback: () => void) => () => void
   openExternal: (url: string) => void
+  minimizeMainWindow: () => Promise<{ success: boolean }>
+  closeMainWindow: () => Promise<{ success: boolean }>
   toggleMainWindow: () => Promise<{ success: boolean; error?: string }>
   triggerScreenshot: () => Promise<{ success: boolean; error?: string }>
   triggerProcessScreenshots: (userRequest?: string) => Promise<{ success: boolean; error?: string }>
+  getChatSession: (id?: string) => Promise<import("./chat").ChatSession | null>
+  newChatSession: (seed?: import("./chat").ChatSessionSeed) => Promise<import("./chat").ChatSession | null>
+  selectChatSession: (id: string) => Promise<import("./chat").ChatSession | null>
+  listChatSessions: () => Promise<import("./chat").ChatSession[]>
+  deleteChatSession: (id: string) => Promise<{
+    success: boolean
+    session?: import("./chat").ChatSession
+  }>
   sendChatMessage: (payload: {
     requestId: string
-    message: string
+    sessionId?: string
+    text: string
+    images?: import("./chat").ChatAttachment[]
   }) => Promise<{ success: boolean; content?: string; error?: string }>
   cancelChat: () => Promise<{ success: boolean }>
   writeClipboardText: (text: string) => Promise<{ success: boolean; error?: string }>
@@ -150,6 +175,10 @@ export interface ElectronAPI {
     solutionBaseURL: string
     solutionModel: string
     debuggingModel: string
+    streamingEnabled: boolean
+    maxOutputTokens: number
+    contextMessageLimit: number
+    contextWindowTokens: number
     speechApiKey: string
     speechWorkspaceId: string
     speechRegion: string
@@ -169,6 +198,10 @@ export interface ElectronAPI {
     solutionBaseURL?: string
     solutionModel?: string
     debuggingModel?: string
+    streamingEnabled?: boolean
+    maxOutputTokens?: number
+    contextMessageLimit?: number
+    contextWindowTokens?: number
     speechApiKey?: string
     speechWorkspaceId?: string
     speechRegion?: string

@@ -213,18 +213,25 @@ export class ShortcutsHelper {
       // deliberate no-op.
       if (!voiceText && !hasScreenshots) return
 
-      if (voiceText && !hasScreenshots) {
-        const requestId = `voice-${Date.now()}`
-        this.deps.getMainWindow()?.webContents.send("voice-submit", {
-          requestId,
-          text: voiceText
-        })
-        this.deps.voiceRecognitionHelper?.clearTranscript()
-        await this.deps.processingHelper?.processChatMessage(requestId, voiceText)
-        return
-      }
-
-      await this.deps.processingHelper?.processScreenshots(voiceText)
+      const chatService = this.deps.chatService
+      if (!chatService) return
+      const screenshotPaths = this.deps.getView() === "queue"
+        ? this.deps.getScreenshotQueue()
+        : this.deps.getExtraScreenshotQueue()
+      const images = await Promise.all(
+        screenshotPaths.map(async (path) => ({
+          path,
+          preview: await this.deps.getImagePreview(path)
+        }))
+      )
+      const requestId = `shortcut-${Date.now()}`
+      const sessionId = chatService.getCurrentSession().id
+      await chatService.sendMessage(
+        sessionId,
+        voiceText || "请分析这些截图并回答。",
+        images,
+        requestId
+      )
       if (voiceText) this.deps.voiceRecognitionHelper?.clearTranscript()
     })
 
@@ -281,17 +288,15 @@ export class ShortcutsHelper {
       this.deps.resetWindowPosition()
     })
 
-    if (process.platform === "darwin") {
-      this.registerShortcut("Command+N", () => {
-        console.log("Cmd + N pressed. Creating a new chat session.")
-        const mainWindow = this.deps.getMainWindow()
-        if (!mainWindow || mainWindow.isDestroyed()) return
+    this.registerShortcut("CommandOrControl+N", () => {
+      console.log("Command/Ctrl + N pressed. Creating a new chat session.")
+      const mainWindow = this.deps.getMainWindow()
+      if (!mainWindow || mainWindow.isDestroyed()) return
 
-        // Show without activation; never steal focus from the foreground app.
-        if (!this.deps.isVisible()) this.deps.toggleMainWindow()
-        mainWindow.webContents.send("new-chat-session")
-      })
-    }
+      // Show without activation; never steal focus from the foreground app.
+      if (!this.deps.isVisible()) this.deps.toggleMainWindow()
+      mainWindow.webContents.send("new-chat-session")
+    })
 
     this.registerShortcut("/", () => {
       console.log("/ pressed. Toggling window visibility.")

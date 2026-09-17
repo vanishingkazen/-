@@ -63,6 +63,8 @@ interface ElectronAPI {
     stage?: string
     requestId?: string
   }) => void) => () => void
+  onChatStarted: (callback: (data: { sessionId: string; requestId: string; userMessage: import("./types/chat").ChatMessage }) => void) => () => void
+  onChatContextCompressed: (callback: (data: { sessionId: string; summary: string }) => void) => () => void
   onChatStream: (callback: (data: {
     requestId: string
     content: string
@@ -79,12 +81,20 @@ interface ElectronAPI {
   onUnauthorized: (callback: () => void) => () => void
   onDebugError: (callback: (error: string) => void) => () => void
   openExternal: (url: string) => void
+  minimizeMainWindow: () => Promise<{ success: boolean }>
+  closeMainWindow: () => Promise<{ success: boolean }>
   toggleMainWindow: () => Promise<{ success: boolean; error?: string }>
   triggerScreenshot: () => Promise<{ success: boolean; error?: string }>
   triggerProcessScreenshots: (userRequest?: string) => Promise<{ success: boolean; error?: string }>
+  getChatSession: () => Promise<import("./types/chat").ChatSession | null>
+  newChatSession: () => Promise<import("./types/chat").ChatSession | null>
+  listChatSessions: () => Promise<import("./types/chat").ChatSession[]>
+  deleteChatSession: (id: string) => Promise<{ success: boolean }>
   sendChatMessage: (payload: {
     requestId: string
-    message: string
+    sessionId?: string
+    text: string
+    images?: import("./types/chat").ChatAttachment[]
   }) => Promise<{ success: boolean; content?: string; error?: string }>
   cancelChat: () => Promise<{ success: boolean }>
   writeClipboardText: (text: string) => Promise<{ success: boolean; error?: string }>

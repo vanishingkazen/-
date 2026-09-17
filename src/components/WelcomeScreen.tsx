@@ -1,5 +1,6 @@
 import React from 'react';
 import { Button } from './ui/button';
+import { COMMAND_KEY } from '../utils/platform';
 
 interface WelcomeScreenProps {
   onOpenSettings: () => void;
@@ -33,27 +34,27 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onOpenSettings }) 
               </li>
               <li className="flex justify-between text-sm">
                 <span className="text-black/65">New Session</span>
-                <span className="text-black/80">Cmd+N（macOS）</span>
+                <span className="text-black/80">{COMMAND_KEY}+N</span>
               </li>
               <li className="flex justify-between text-sm">
                 <span className="text-black/65">Take Screenshot</span>
-                <span className="text-black/80">Ctrl+H / Cmd+H</span>
+                <span className="text-black/80">{COMMAND_KEY}+H</span>
               </li>
               <li className="flex justify-between text-sm">
                 <span className="text-black/65">Delete Last Screenshot</span>
-                <span className="text-black/80">Ctrl+L / Cmd+L</span>
+                <span className="text-black/80">{COMMAND_KEY}+L</span>
               </li>
               <li className="flex justify-between text-sm">
                 <span className="text-black/65">Process Screenshots</span>
-                <span className="text-black/80">Ctrl+Enter / Cmd+Enter</span>
+                <span className="text-black/80">{COMMAND_KEY}+Enter</span>
               </li>
               <li className="flex justify-between text-sm">
                 <span className="text-black/65">Reset View</span>
-                <span className="text-black/80">Ctrl+R / Cmd+R</span>
+                <span className="text-black/80">{COMMAND_KEY}+R</span>
               </li>
               <li className="flex justify-between text-sm">
                 <span className="text-black/65">Quit App</span>
-                <span className="text-black/80">Ctrl+Q / Cmd+Q</span>
+                <span className="text-black/80">{COMMAND_KEY}+Q</span>
               </li>
             </ul>
           </div>
@@ -73,7 +74,7 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onOpenSettings }) 
         </div>
         
         <div className="text-black/45 text-xs text-center">
-          Start by taking screenshots of your coding problem (Ctrl+H / Cmd+H)
+          Start by taking screenshots of your coding problem ({COMMAND_KEY}+H)
         </div>
       </div>
     </div>

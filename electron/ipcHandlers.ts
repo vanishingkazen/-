@@ -1,12 +1,12 @@
 // ipcHandlers.ts
 
-import { clipboard, ipcMain, shell, dialog } from "electron"
-import { randomBytes } from "crypto"
+import { clipboard, ipcMain, shell } from "electron"
 import { IIpcHandlerDeps } from "./main"
 import { configHelper } from "./ConfigHelper"
 import { historyHelper } from "./HistoryHelper"
 import type { VoiceSource } from "./VoiceRecognitionHelper"
 import { ensureInterviewContextFile, getInterviewContextStatus } from "./InterviewContextHelper"
+import type { ChatSessionSeed } from "./ChatService"
 
 export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
   console.log("Initializing IPC handlers")
@@ -353,6 +353,20 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     }
   })
 
+  ipcMain.handle("minimize-main-window", () => {
+    const mainWindow = deps.getMainWindow()
+    if (!mainWindow || mainWindow.isDestroyed()) return { success: false }
+    mainWindow.minimize()
+    return { success: true }
+  })
+
+  ipcMain.handle("close-main-window", () => {
+    const mainWindow = deps.getMainWindow()
+    if (!mainWindow || mainWindow.isDestroyed()) return { success: false }
+    mainWindow.close()
+    return { success: true }
+  })
+
   ipcMain.handle("reset-queues", async () => {
     try {
       deps.clearQueues()
@@ -390,21 +404,68 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     }
   })
 
+  ipcMain.handle("chat-get-session", (_event, id?: string) => {
+    if (!deps.chatService) return null
+    return id ? deps.chatService.getSession(id) : deps.chatService.getCurrentSession()
+  })
+
+  ipcMain.handle("chat-new-session", (_event, seed?: ChatSessionSeed) => {
+    return deps.chatService?.createSession(seed) || null
+  })
+
+  ipcMain.handle("chat-select-session", (_event, id: string) => {
+    return deps.chatService?.selectSession(id) || null
+  })
+  ipcMain.handle("chat-list-sessions", () => {
+    return deps.chatService?.listSessions() || []
+  })
+
+  ipcMain.handle("chat-delete-session", (_event, id: string) => {
+    if (!id || !deps.chatService) return { success: false }
+    const wasCurrent = deps.chatService.getCurrentSession().id === id
+    const success = deps.chatService.deleteSession(id)
+    return {
+      success,
+      ...(success && wasCurrent ? { session: deps.chatService.getCurrentSession() } : {})
+    }
+  })
+
   ipcMain.handle(
     "chat-send-message",
-    async (_event, payload: { requestId: string; message: string }) => {
+    async (_event, payload: {
+      requestId: string
+      sessionId?: string
+      text: string
+      images?: Array<{ path: string; preview?: string }>
+    }) => {
       if (!configHelper.hasApiKey()) {
         return { success: false, error: "API key required" }
       }
-      return deps.processingHelper?.processChatMessage(
-        payload.requestId,
-        payload.message
+      if (!payload || typeof payload !== "object") {
+        return { success: false, error: "请求参数无效" }
+      }
+      if (typeof payload.requestId !== "string" || !payload.requestId.trim()) {
+        return { success: false, error: "请求标识无效" }
+      }
+      if (!deps.chatService) {
+        return { success: false, error: "Chat service unavailable" }
+      }
+      const sessionId = typeof payload.sessionId === "string" && payload.sessionId.trim()
+        ? payload.sessionId
+        : deps.chatService.getCurrentSession().id
+      const text = typeof payload.text === "string" ? payload.text : ""
+      const images = Array.isArray(payload.images) ? payload.images : []
+      return deps.chatService.sendMessage(
+        sessionId,
+        text,
+        images,
+        payload.requestId
       )
     }
   )
 
   ipcMain.handle("chat-cancel", () => {
-    deps.processingHelper?.cancelActiveRequest()
+    deps.chatService?.cancel()
     return { success: true }
   })
 
@@ -414,6 +475,8 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
       // First cancel any ongoing requests
       deps.processingHelper?.cancelOngoingRequests()
       deps.processingHelper?.setCurrentBasicCode("")
+      deps.chatService?.cancel()
+      const resetSession = deps.chatService?.resetCurrentSession()
 
       // Clear all queues immediately
       deps.clearQueues()
@@ -425,7 +488,7 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
       const mainWindow = deps.getMainWindow()
       if (mainWindow && !mainWindow.isDestroyed()) {
         // Send reset events in sequence
-        mainWindow.webContents.send("reset-view")
+        mainWindow.webContents.send("reset-view", { session: resetSession })
         mainWindow.webContents.send("reset")
       }
 

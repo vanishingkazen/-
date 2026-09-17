@@ -10,6 +10,7 @@ import {
 import { Input } from "../ui/input";
 import { Button } from "../ui/button";
 import { useToast } from "../../contexts/toast";
+import { COMMAND_KEY } from "../../utils/platform";
 
 type APIProvider = "openai" | "openai-compatible" | "gemini" | "anthropic";
 
@@ -186,6 +187,9 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
   const [solutionModel, setSolutionModel] = useState("gpt-4o");
   const [debuggingModel, setDebuggingModel] = useState("gpt-4o");
   const [streamingEnabled, setStreamingEnabled] = useState(true);
+  const [maxOutputTokens, setMaxOutputTokens] = useState(32768);
+  const [contextMessageLimit, setContextMessageLimit] = useState(30);
+  const [contextWindowTokens, setContextWindowTokens] = useState(128000);
   const [opacity, setOpacity] = useState(1);
   const savedOpacityRef = useRef(1);
   const [interviewContextPath, setInterviewContextPath] = useState("");
@@ -229,6 +233,9 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
         solutionModel?: string;
         debuggingModel?: string;
         streamingEnabled?: boolean;
+        maxOutputTokens?: number;
+        contextMessageLimit?: number;
+        contextWindowTokens?: number;
         opacity?: number;
         interviewContextPath?: string;
         speechApiKey?: string;
@@ -249,6 +256,9 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
           setSolutionModel(config.solutionModel || "gpt-4o");
           setDebuggingModel(config.debuggingModel || "gpt-4o");
           setStreamingEnabled(config.streamingEnabled !== false);
+          setMaxOutputTokens(config.maxOutputTokens || 32768);
+          setContextMessageLimit(config.contextMessageLimit || 30);
+          setContextWindowTokens(config.contextWindowTokens || 128000);
           const loadedOpacity = Math.min(1, Math.max(0.1, config.opacity ?? 1));
           setOpacity(loadedOpacity);
           savedOpacityRef.current = loadedOpacity;
@@ -332,6 +342,9 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
         solutionModel,
         debuggingModel,
         streamingEnabled,
+        maxOutputTokens,
+        contextMessageLimit,
+        contextWindowTokens,
         opacity,
         interviewContextPath,
         speechApiKey,
@@ -595,7 +608,63 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
               </div>
             </div>
           )}
-          
+
+          <div className="space-y-3 rounded-lg border border-black/10 bg-white/[0.52] p-3">
+            <div>
+              <label className="text-sm font-medium text-black" htmlFor="context-message-limit">
+                上下文消息数
+              </label>
+              <p className="mt-1 text-xs text-black/55">
+                每次追问会携带最近 N 条对话消息；数值越大，上下文越完整，但请求也越大。
+              </p>
+              <Input
+                id="context-message-limit"
+                type="number"
+                min={4}
+                max={100}
+                value={contextMessageLimit}
+                onChange={(event) => setContextMessageLimit(Number(event.target.value))}
+                className="mt-2 bg-white/[0.68] border-black/10 text-black"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-black" htmlFor="context-window-tokens">
+                模型上下文窗口 Tokens
+              </label>
+              <p className="mt-1 text-xs text-black/55">
+                当前模型可接收的最大上下文长度，用于判断何时压缩历史对话。
+              </p>
+              <Input
+                id="context-window-tokens"
+                type="number"
+                min={8192}
+                max={1000000}
+                step={1024}
+                value={contextWindowTokens}
+                onChange={(event) => setContextWindowTokens(Number(event.target.value))}
+                className="mt-2 bg-white/[0.68] border-black/10 text-black"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-black" htmlFor="max-output-tokens">
+                单次最大输出 Tokens
+              </label>
+              <p className="mt-1 text-xs text-black/55">
+                截图解题、文字追问和调试模式共用的最大输出长度。范围 1024～65536。
+              </p>
+              <Input
+                id="max-output-tokens"
+                type="number"
+                min={1024}
+                max={65536}
+                step={1024}
+                value={maxOutputTokens}
+                onChange={(event) => setMaxOutputTokens(Number(event.target.value))}
+                className="mt-2 bg-white/[0.68] border-black/10 text-black"
+              />
+            </div>
+          </div>
+
           <div className="space-y-2">
             <label className="text-sm font-medium text-black" htmlFor="apiKey">
             {apiProvider === "openai-compatible" ? "Compatible API Key" :
@@ -685,43 +754,43 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
                 <div className="text-black/80">快速左右晃动 4 次</div>
                 
                 <div className="text-black/65">New Session</div>
-                <div className="text-black/80 font-mono">Cmd+N（macOS）</div>
+                <div className="text-black/80 font-mono">{COMMAND_KEY}+N</div>
                 
                 <div className="text-black/65">Take Screenshot</div>
-                <div className="text-black/80 font-mono">Ctrl+H / Cmd+H</div>
+                <div className="text-black/80 font-mono">{COMMAND_KEY}+H</div>
                 
                 <div className="text-black/65">Process Screenshots</div>
-                <div className="text-black/80 font-mono">Ctrl+Enter / Cmd+Enter</div>
+                <div className="text-black/80 font-mono">{COMMAND_KEY}+Enter</div>
 
                 <div className="text-black/65">Toggle Voice Input</div>
-                <div className="text-black/80 font-mono">Ctrl+Shift+M / Cmd+Shift+M</div>
+                <div className="text-black/80 font-mono">{COMMAND_KEY}+Shift+M</div>
                 
                 <div className="text-black/65">Delete Last Screenshot</div>
-                <div className="text-black/80 font-mono">Ctrl+L / Cmd+L</div>
+                <div className="text-black/80 font-mono">{COMMAND_KEY}+L</div>
                 
                 <div className="text-black/65">Reset View</div>
-                <div className="text-black/80 font-mono">Ctrl+R / Cmd+R</div>
+                <div className="text-black/80 font-mono">{COMMAND_KEY}+R</div>
                 
                 <div className="text-black/65">Quit Application</div>
-                <div className="text-black/80 font-mono">Ctrl+Q / Cmd+Q</div>
+                <div className="text-black/80 font-mono">{COMMAND_KEY}+Q</div>
                 
                 <div className="text-black/65">Move Window</div>
-                <div className="text-black/80 font-mono">Ctrl+Arrow Keys</div>
+                <div className="text-black/80 font-mono">{COMMAND_KEY}+Arrow Keys</div>
                 
                 <div className="text-black/65">Decrease Opacity</div>
-                <div className="text-black/80 font-mono">Ctrl+[ / Cmd+[</div>
+                <div className="text-black/80 font-mono">{COMMAND_KEY}+[</div>
                 
                 <div className="text-black/65">Increase Opacity</div>
-                <div className="text-black/80 font-mono">Ctrl+] / Cmd+]</div>
+                <div className="text-black/80 font-mono">{COMMAND_KEY}+]</div>
                 
                 <div className="text-black/65">Zoom Out</div>
-                <div className="text-black/80 font-mono">Ctrl+- / Cmd+-</div>
+                <div className="text-black/80 font-mono">{COMMAND_KEY}+-</div>
                 
                 <div className="text-black/65">Reset Zoom</div>
-                <div className="text-black/80 font-mono">Ctrl+0 / Cmd+0</div>
+                <div className="text-black/80 font-mono">{COMMAND_KEY}+0</div>
                 
                 <div className="text-black/65">Zoom In</div>
-                <div className="text-black/80 font-mono">Ctrl+= / Cmd+=</div>
+                <div className="text-black/80 font-mono">{COMMAND_KEY}+=</div>
               </div>
             </div>
           </div>

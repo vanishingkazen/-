@@ -9,7 +9,8 @@ import { Screenshot } from "../types/screenshots"
 async function fetchScreenshots(): Promise<Screenshot[]> {
   try {
     const existing = await window.electronAPI.getScreenshots()
-    return existing
+    const result = existing as typeof existing | Array<{ path: string; preview: string }>
+    return Array.isArray(result) ? result : result.previews || []
   } catch (error) {
     console.error("Error loading screenshots:", error)
     throw error

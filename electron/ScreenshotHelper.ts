@@ -222,15 +222,24 @@ export class ScreenshotHelper {
         console.log("Attempting Windows screenshot with PowerShell (Method 2)");
         const tempFile = path.join(this.tempDir, `ps-temp-${uuidv4()}.png`);
 
-        // PowerShell command to take screenshot using .NET classes
+        // PowerShell command to take screenshot using .NET classes.
+        // Relative coordinates are important for multi-monitor layouts with
+        // monitors positioned to the left or above the primary display.
         const psScript = `
         Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+        Add-Type @"
+        using System.Runtime.InteropServices;
+        public class DpiHelper { [DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); }
+"@
+        [DpiHelper]::SetProcessDPIAware() | Out-Null
         $screens = [System.Windows.Forms.Screen]::AllScreens
         $top = ($screens | ForEach-Object {$_.Bounds.Top} | Measure-Object -Minimum).Minimum
         $left = ($screens | ForEach-Object {$_.Bounds.Left} | Measure-Object -Minimum).Minimum
-        $width = ($screens | ForEach-Object {$_.Bounds.Right} | Measure-Object -Maximum).Maximum
-        $height = ($screens | ForEach-Object {$_.Bounds.Bottom} | Measure-Object -Maximum).Maximum
-        $bounds = [System.Drawing.Rectangle]::FromLTRB($left, $top, $width, $height)
+        $right = ($screens | ForEach-Object {$_.Bounds.Right} | Measure-Object -Maximum).Maximum
+        $bottom = ($screens | ForEach-Object {$_.Bounds.Bottom} | Measure-Object -Maximum).Maximum
+        $width = $right - $left
+        $height = $bottom - $top
+        $bounds = [System.Drawing.Rectangle]::FromLTRB($left, $top, $right, $bottom)
         $bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
         $graphics = [System.Drawing.Graphics]::FromImage($bmp)
         $graphics.CopyFromScreen($bounds.Left, $bounds.Top, 0, 0, $bounds.Size)
@@ -243,7 +252,7 @@ export class ScreenshotHelper {
         `;
 
         // Execute PowerShell
-        await execFileAsync("powershell", [
+        await execFileAsync("powershell.exe", [
           "-NoProfile",
           "-ExecutionPolicy",
           "Bypass",
@@ -272,19 +281,8 @@ export class ScreenshotHelper {
       } catch (psError) {
         console.warn("Windows PowerShell screenshot failed:", psError);
 
-        // Method 3: Last resort - create a tiny placeholder image
-        console.log(
-          "All screenshot methods failed, creating placeholder image"
-        );
-
-        // Create a 1x1 transparent PNG as fallback
-        const fallbackBuffer = Buffer.from(
-          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
-          "base64"
-        );
-        console.log("Created placeholder image as fallback");
-
-        // Show the error but return a valid buffer so the app doesn't crash
+        // Do not send a fake placeholder screenshot to the model. Surface the
+        // capture failure so the renderer can show a meaningful error.
         throw new Error(
           "Could not capture screenshot with any method. Please check your Windows security settings and try again."
         );

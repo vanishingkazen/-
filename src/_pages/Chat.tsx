@@ -1,12 +1,12 @@
 import {
   Camera,
   Check,
-  ChevronDown,
   Code2,
   Copy,
   History,
   LoaderCircle,
   MessageSquarePlus,
+  Minus,
   Mic,
   MicOff,
   Send,
@@ -28,6 +28,7 @@ import rust from "react-syntax-highlighter/dist/esm/languages/prism/rust"
 import type { HistoryRecord, SavedSolutionData } from "../types/history"
 import type { ProblemStatementData } from "../types/solutions"
 import { useToast } from "../contexts/toast"
+import { COMMAND_KEY, isWindows } from "../utils/platform"
 
 interface ChatProps {
   credits: number
@@ -47,7 +48,7 @@ interface ChatMessage {
   images?: ScreenshotAttachment[]
   streaming?: boolean
   speaker?: "用户A" | "用户B"
-  stage?: "提交截图" | "题目提取" | "IQ 视觉解题" | "解答" | "调试" | "追问" | "语音输入"
+  stage?: "提交截图" | "题目提取" | "IQ 视觉解题" | "解答" | "调试" | "追问" | "语音输入" | "对话"
 }
 
 interface AudioCaptureChain {
@@ -71,17 +72,6 @@ const emptyAudioCaptureChain = (): AudioCaptureChain => ({
   sourceNode: null,
   processor: null
 })
-
-const LANGUAGES = [
-  ["python", "Python"],
-  ["javascript", "JavaScript"],
-  ["typescript", "TypeScript"],
-  ["java", "Java"],
-  ["cpp", "C++"],
-  ["csharp", "C#"],
-  ["golang", "Go"],
-  ["rust", "Rust"]
-]
 
 SyntaxHighlighter.registerLanguage("python", python)
 SyntaxHighlighter.registerLanguage("javascript", javascript)
@@ -248,13 +238,12 @@ const downsampleToPcm16 = (input: Float32Array, sourceRate: number): ArrayBuffer
 const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
   const { showToast } = useToast()
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [sessionId, setSessionId] = useState("")
   const [attachments, setAttachments] = useState<ScreenshotAttachment[]>([])
   const [input, setInput] = useState("")
   const [busy, setBusy] = useState(false)
   const [phase, setPhase] = useState("")
-  const [progress, setProgress] = useState(0)
   const [sessionTitle, setSessionTitle] = useState("新建解题会话")
-  const [languageOpen, setLanguageOpen] = useState(false)
   const [voiceActive, setVoiceActive] = useState(false)
   const [systemVoiceStatus, setSystemVoiceStatus] = useState("")
   const [systemVoicePartial, setSystemVoicePartial] = useState("")
@@ -268,7 +257,7 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
   const [interviewContextCharacters, setInterviewContextCharacters] = useState(0)
   const [interviewContextBusy, setInterviewContextBusy] = useState(false)
   const activeAssistantId = useRef<string | null>(null)
-  const pendingUserMessage = useRef(false)
+  const sessionIdRef = useRef("")
   const attachmentsRef = useRef<ScreenshotAttachment[]>([])
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -280,6 +269,10 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
     microphone: emptyAudioCaptureChain()
   })
 
+  useEffect(() => {
+    sessionIdRef.current = sessionId
+  }, [sessionId])
+
   const updateAssistant = useCallback(
     (id: string, content: string, streaming: boolean) => {
       setMessages((current) =>
@@ -287,6 +280,35 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
           item.id === id ? { ...item, content, streaming } : item
         )
       )
+    },
+    []
+  )
+
+  const showLocalSendError = useCallback(
+    (assistantId: string, text: string, images: ScreenshotAttachment[], error: string) => {
+      setMessages((current) => {
+        if (current.some((item) => item.id === assistantId)) {
+          return current.map((item) =>
+            item.id === assistantId ? { ...item, content: error, streaming: false } : item
+          )
+        }
+        return [
+          ...current,
+          {
+            id: `${assistantId}-user`,
+            role: "user" as const,
+            content: text || "请分析截图并回答。",
+            images,
+            stage: images.length ? "提交截图" as const : undefined
+          },
+          {
+            id: assistantId,
+            role: "error" as const,
+            content: error,
+            streaming: false
+          }
+        ]
+      })
     },
     []
   )
@@ -331,27 +353,6 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
     const requestText = `请从下面的双声道面试转写中，找到用户A真正需要用户B回答的问题，并直接给出自然、口语化的回答。\n\n${voiceAnswerFormat}\n\n${conversationText}`
     const assistantId = createId("assistant")
     activeAssistantId.current = assistantId
-    pendingUserMessage.current = true
-    setMessages((current) => [
-      ...current,
-      {
-        id: createId("user"),
-        role: "user" as const,
-        content: [
-          systemText ? `用户A：${systemText}` : "",
-          microphoneText ? `用户B：${microphoneText}` : ""
-        ].filter(Boolean).join("\n\n"),
-        images: requestAttachments.length ? requestAttachments : undefined,
-        stage: "语音输入" as const
-      },
-      {
-        id: assistantId,
-        role: "assistant",
-        content: "",
-        streaming: true,
-        stage: requestAttachments.length ? undefined : "追问"
-      }
-    ])
     setSystemVoiceTranscript("")
     setSystemVoicePartial("")
     systemVoiceTranscriptRef.current = ""
@@ -361,26 +362,24 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
     setBusy(true)
     void window.electronAPI.clearVoiceContext()
 
-    if (requestAttachments.length) {
-      const result = await window.electronAPI.triggerProcessScreenshots(requestText)
-      if (!result.success) {
-        updateAssistant(assistantId, result.error || "截图处理失败", false)
-        setBusy(false)
-      }
-      return
-    }
-
     setPhase("正在发送语音问题...")
-    const result = await window.electronAPI.sendChatMessage({
-      requestId: assistantId,
-      message: requestText
-    })
-    if (!result.success) {
-      updateAssistant(assistantId, result.error || "语音消息发送失败", false)
+    try {
+      const result = await window.electronAPI.sendChatMessage({
+        requestId: assistantId,
+        sessionId: sessionIdRef.current || sessionId,
+        text: requestText,
+        images: requestAttachments
+      })
+      if (!result.success) {
+        showLocalSendError(assistantId, requestText, requestAttachments, result.error || "语音消息发送失败")
+      }
+    } catch (error) {
+      showLocalSendError(assistantId, requestText, requestAttachments, error instanceof Error ? error.message : "语音消息发送失败")
+    } finally {
       setBusy(false)
       setPhase("")
     }
-  }, [busy, showToast, updateAssistant])
+  }, [busy, sessionId, showLocalSendError, showToast])
 
   const attachAudioStream = useCallback((stream: MediaStream, voiceSource: VoiceSource) => {
     const context = new AudioContext()
@@ -499,8 +498,21 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
   }, [showToast])
 
   useEffect(() => {
-    void window.electronAPI.getConfig().then(() => {
-      setSessionTitle("新建解题会话")
+    void window.electronAPI.getChatSession().then((session) => {
+      if (!session) return
+      // Do not let a slow initial IPC response overwrite a session selected or
+      // created by the user while the window was mounting.
+      if (sessionIdRef.current && session.id !== sessionIdRef.current) return
+      setSessionId(session.id)
+      sessionIdRef.current = session.id
+      setSessionTitle(session.title || "新对话")
+      setMessages(session.messages.map((message) => ({
+        id: message.id,
+        role: message.role,
+        content: message.content,
+        images: message.images?.map((image) => ({ path: image.path, preview: image.preview || "" })),
+        streaming: message.status === "streaming"
+      })))
     })
     void window.electronAPI.getInterviewContextStatus().then((status) => {
       setInterviewContextEnabled(status.enabled && status.available)
@@ -533,50 +545,96 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
     }
   }, [busy, interviewContextBusy, interviewContextEnabled, showToast])
 
-  const addRestoredRecord = useCallback((record: HistoryRecord) => {
-    setSessionTitle(record.title)
-    setMessages([
-      {
-        id: `history-user-${record.id}`,
-        role: "user",
-        content: `已提交题目截图（${record.screenshotPaths?.length || 1} 张）`,
-        stage: "提交截图"
-      },
-      {
-        id: `history-extraction-${record.id}`,
-        role: "assistant",
-        content: formatProblem(record.problem),
-        stage: "题目提取"
-      },
-      {
-        id: `history-assistant-${record.id}`,
-        role: "assistant",
-        content: formatSolution(record.solution),
-        stage: "解答"
-      }
-    ])
-    setLanguage(record.language)
-  }, [setLanguage])
-
+  const addRestoredRecord = useCallback(async (record: HistoryRecord) => {
+    if (busy) {
+      showToast("当前回答尚未结束", "请等待回答完成后再打开历史记录", "neutral")
+      return
+    }
+    const now = new Date().toISOString()
+    const screenshotPaths = record.screenshotPaths || []
+    const session = await window.electronAPI.newChatSession({
+      title: record.title,
+      messages: [
+        {
+          id: "history-user-" + record.id,
+          role: "user",
+          content: "已提交题目截图（" + screenshotPaths.length + " 张）",
+          images: screenshotPaths.map((path) => ({ path })),
+          createdAt: now,
+          status: "completed"
+        },
+        {
+          id: "history-assistant-" + record.id,
+          role: "assistant",
+          content: formatProblem(record.problem) + "\n\n" + formatSolution(record.solution),
+          images: [],
+          createdAt: now,
+          status: "completed"
+        }
+      ]
+    })
+    if (!session) return
+    setSessionId(session.id)
+    sessionIdRef.current = session.id
+    setSessionTitle(session.title || record.title)
+    setInput("")
+    setAttachments([])
+    setPhase("")
+    activeAssistantId.current = null
+    setMessages(session.messages.map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: message.content,
+      images: message.images?.map((image) => ({ path: image.path, preview: image.preview || "" })),
+      streaming: false
+    })))
+    const restoredLanguage = typeof record.language === "string" ? record.language.trim().toLowerCase() : ""
+    if (restoredLanguage && restoredLanguage !== "auto") {
+      setLanguage(restoredLanguage)
+      // A restored screenshot solution carries its detected language. Keep
+      // subsequent follow-up turns in the same session aligned with it, but
+      // never persist `auto` as if it were a manual choice.
+      void window.electronAPI.updateConfig({ language: restoredLanguage })
+    } else {
+      setLanguage("auto")
+    }
+  }, [busy, setLanguage, showToast])
   useEffect(() => {
     window.electronAPI.getScreenshots()
       .then((value) => setAttachments(normalizeScreenshots(value)))
       .catch(() => setAttachments([]))
 
-    const restoreLatest = async () => {
-      const records = await window.electronAPI.getHistory()
-      if (!records.length) return
-      const result = await window.electronAPI.restoreHistory(records[0].id)
-      if (result.success && result.record) addRestoredRecord(result.record)
-    }
-    restoreLatest().catch((error) => console.error("Failed to restore chat:", error))
-
     const onHistorySelected = (event: Event) => {
-      addRestoredRecord((event as CustomEvent<HistoryRecord>).detail)
+      void addRestoredRecord((event as CustomEvent<HistoryRecord>).detail)
+    }
+    const onChatSessionSelected = (event: Event) => {
+      if (busy) {
+        showToast("当前回答尚未结束", "请等待回答完成后再切换会话", "neutral")
+        return
+      }
+      const session = (event as CustomEvent<import("../types/chat").ChatSession>).detail
+      setSessionId(session.id)
+      sessionIdRef.current = session.id
+      setSessionTitle(session.title || "新对话")
+      setInput("")
+      setAttachments([])
+      setPhase("")
+      activeAssistantId.current = null
+      setMessages(session.messages.map((message) => ({
+        id: message.id,
+        role: message.role,
+        content: message.content,
+        images: message.images?.map((image) => ({ path: image.path, preview: image.preview || "" })),
+        streaming: message.status === "streaming"
+      })))
     }
     window.addEventListener("history-record-selected", onHistorySelected)
-    return () => window.removeEventListener("history-record-selected", onHistorySelected)
-  }, [addRestoredRecord])
+    window.addEventListener("chat-session-selected", onChatSessionSelected)
+    return () => {
+      window.removeEventListener("history-record-selected", onHistorySelected)
+      window.removeEventListener("chat-session-selected", onChatSessionSelected)
+    }
+  }, [addRestoredRecord, busy, showToast])
 
   useEffect(() => {
     const cleanups = [
@@ -640,123 +698,71 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
           { id: requestId, role: "assistant", content: "", streaming: true, stage: "追问" }
         ])
       }),
-      window.electronAPI.onSolutionStart(() => {
+      window.electronAPI.onChatStarted((data) => {
+        if (sessionIdRef.current && data.sessionId !== sessionIdRef.current) return
+        setSessionId(data.sessionId)
+        sessionIdRef.current = data.sessionId
+        activeAssistantId.current = data.requestId
         setBusy(true)
-        setPhase("正在使用视觉模型直接解题...")
-        setProgress(15)
-        if (!pendingUserMessage.current) {
-          setMessages((current) => [
-            ...current,
-            {
-              id: createId("user"),
-              role: "user",
-              content: `已提交题目截图（${attachmentsRef.current.length} 张）${systemVoiceTranscriptRef.current ? `\n\n用户A语音：${systemVoiceTranscriptRef.current}` : ""}`,
-              images: attachmentsRef.current,
-              stage: "提交截图"
-            }
-          ])
-        }
-        pendingUserMessage.current = false
-        const hasExistingAssistant = Boolean(activeAssistantId.current)
-        const id = activeAssistantId.current || createId("assistant")
-        activeAssistantId.current = id
-        if (!hasExistingAssistant) {
-          setMessages((current) => [
-            ...current,
-            { id, role: "assistant", content: "", streaming: true, stage: "视觉解题" }
-          ])
-        } else {
-          setMessages((current) => current.map((message) =>
-            message.id === id ? { ...message, stage: "视觉解题" } : message
-          ))
-        }
-      }),
-      window.electronAPI.onProcessingStatus((status) => {
-        setPhase(status.message)
-        setProgress(status.progress)
-      }),
-      window.electronAPI.onSolutionStream((data) => {
-        const id = activeAssistantId.current
-        if (id) updateAssistant(id, data.content, !data.done)
-      }),
-      window.electronAPI.onSolutionSuccess((solution: SavedSolutionData) => {
-        const id = activeAssistantId.current
-        if (!id) return
-        setMessages((current) =>
-          current.map((item) =>
-            item.id === id
-              ? {
-                  ...item,
-                  content: item.content.trim() ? item.content : formatSolution(solution),
-                  streaming: false
-                }
-              : item
-          )
-        )
-        activeAssistantId.current = null
-        setBusy(false)
-        setPhase("")
-        setProgress(0)
-        setAttachments([])
-      }),
-      window.electronAPI.onSolutionError((error) => {
-        const id = activeAssistantId.current
-        if (id) updateAssistant(id, error, false)
-        activeAssistantId.current = null
-        setBusy(false)
-        setPhase("")
-      }),
-      window.electronAPI.onDebugStart(() => {
-        setBusy(true)
-        setPhase("正在分析补充截图...")
-        const id = activeAssistantId.current
-        if (id) {
-          setMessages((current) => current.map((message) =>
-            message.id === id ? { ...message, stage: "调试" } : message
-          ))
-        }
-      }),
-      window.electronAPI.onDebugSuccess((data) => {
-        const id = activeAssistantId.current
-        if (id) updateAssistant(id, data.debug_analysis || data.code || "调试完成", false)
-        activeAssistantId.current = null
-        setBusy(false)
-        setPhase("")
-        setAttachments([])
-      }),
-      window.electronAPI.onDebugError((error) => {
-        const id = activeAssistantId.current
-        if (id) updateAssistant(id, error, false)
-        activeAssistantId.current = null
-        setBusy(false)
-        setPhase("")
+        setPhase("正在连接模型...")
+        setMessages((current) => [
+          ...current,
+          {
+            id: data.userMessage.id,
+            role: "user",
+            content: data.userMessage.content,
+            images: data.userMessage.images?.map((image) => ({ path: image.path, preview: image.preview || "" })),
+            stage: data.userMessage.images?.length ? "提交截图" : undefined,
+          },
+          { id: data.requestId, role: "assistant", content: "", streaming: true, stage: "对话" },
+        ])
       }),
       window.electronAPI.onChatStream((data) => {
+        if (data.sessionId !== sessionIdRef.current || activeAssistantId.current !== data.requestId) return
         updateAssistant(data.requestId, data.content, !data.done)
       }),
       window.electronAPI.onChatSuccess((data) => {
+        if (data.sessionId !== sessionIdRef.current || activeAssistantId.current !== data.requestId) return
         updateAssistant(data.requestId, data.content, false)
-        if (activeAssistantId.current === data.requestId) activeAssistantId.current = null
+        activeAssistantId.current = null
         setBusy(false)
         setPhase("")
+        setSessionTitle(data.session.title || "新对话")
+        setMessages(data.session.messages.map((message) => ({
+          id: message.id,
+          role: message.role,
+          content: message.content,
+          images: message.images?.map((image) => ({ path: image.path, preview: image.preview || "" })),
+          streaming: message.status === "streaming",
+        })))
+      }),
+      window.electronAPI.onChatContextCompressed((data) => {
+        if (data.sessionId !== sessionIdRef.current) return
+        setPhase("上下文已压缩，继续生成回答...")
       }),
       window.electronAPI.onChatError((data) => {
+        if (data.sessionId !== sessionIdRef.current || activeAssistantId.current !== data.requestId) return
         updateAssistant(data.requestId, data.error, false)
-        if (activeAssistantId.current === data.requestId) activeAssistantId.current = null
+        activeAssistantId.current = null
         setBusy(false)
         setPhase("")
       }),
-      window.electronAPI.onResetView(() => {
+      window.electronAPI.onResetView((data) => {
         releaseVoiceCapture()
         void window.electronAPI.stopVoiceRecognition("system")
         void window.electronAPI.stopVoiceRecognition("microphone")
         setMessages([])
         setAttachments([])
+        if (data?.session) {
+          setSessionId(data.session.id)
+          sessionIdRef.current = data.session.id
+          setSessionTitle(data.session.title || "新对话")
+        }
         setSystemVoiceTranscript("")
         setSystemVoicePartial("")
         setMicrophoneVoiceTranscript("")
         setMicrophoneVoicePartial("")
-        setSessionTitle("新建解题会话")
+        if (!data?.session) setSessionTitle("新建解题会话")
         setBusy(false)
         setPhase("")
         activeAssistantId.current = null
@@ -807,56 +813,52 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
     if (busy || (!text && attachments.length === 0)) return
 
     const requestAttachments = [...attachments]
-    const visibleText = text || "请分析这些截图并给出解答。"
     const assistantId = createId("assistant")
     activeAssistantId.current = assistantId
-    pendingUserMessage.current = true
-    setMessages((current) => [
-      ...current,
-      {
-        id: createId("user"),
-        role: "user",
-        content: visibleText,
-        images: requestAttachments.length ? requestAttachments : undefined,
-        stage: requestAttachments.length ? "提交截图" : undefined
-      },
-      { id: assistantId, role: "assistant", content: "", streaming: true, stage: requestAttachments.length ? undefined : "追问" }
-    ])
+
     setInput("")
     if (requestAttachments.length > 0) setAttachments([])
     setBusy(true)
 
-    if (requestAttachments.length > 0) {
-      const result = await window.electronAPI.triggerProcessScreenshots(text)
-      if (!result.success) {
-        setAttachments(requestAttachments)
-        updateAssistant(assistantId, result.error || "截图处理失败", false)
-        setBusy(false)
-      }
-      return
-    }
-
     setPhase("正在发送消息...")
-    const result = await window.electronAPI.sendChatMessage({
-      requestId: assistantId,
-      message: text
-    })
-    if (!result.success) {
-      updateAssistant(assistantId, result.error || "消息发送失败", false)
+    try {
+      const result = await window.electronAPI.sendChatMessage({
+        requestId: assistantId,
+        sessionId: sessionIdRef.current || sessionId,
+        text,
+        images: requestAttachments
+      })
+      if (!result.success) {
+        showLocalSendError(assistantId, text, requestAttachments, result.error || "消息发送失败")
+      }
+    } catch (error) {
+      showLocalSendError(assistantId, text, requestAttachments, error instanceof Error ? error.message : "消息发送失败")
+    } finally {
       setBusy(false)
       setPhase("")
     }
   }
 
   const newSession = useCallback(async () => {
-    await window.electronAPI.triggerReset()
-    setMessages([])
-    setInput("")
-    setAttachments([])
-    setSessionTitle("新建解题会话")
+    if (busy) {
+      showToast("当前回答尚未结束", "请等待回答完成后再新建会话", "neutral")
+      return
+    }
+    try {
+      const session = await window.electronAPI.newChatSession()
+      setSessionId(session?.id || "")
+      sessionIdRef.current = session?.id || ""
+      setMessages([])
+      setInput("")
+      setAttachments([])
+      setSessionTitle(session?.title || "新对话")
+      setPhase("")
+      activeAssistantId.current = null
+    } catch (error) {
+      showToast("新建会话失败", error instanceof Error ? error.message : "无法创建新的聊天会话", "error")
+    }
     window.setTimeout(() => inputRef.current?.focus(), 0)
-  }, [])
-
+  }, [busy, showToast])
   useEffect(() => {
     return window.electronAPI.onNewChatSession(() => {
       void newSession()
@@ -865,46 +867,24 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
 
   return (
     <main className="pandora-chat-shell">
-      <header className="pandora-chat-header">
+      <header className={`pandora-chat-header ${isWindows ? "windows-draggable" : ""}`}>
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-[13px] font-medium text-black/80">
             <Code2 size={15} className="text-black/[0.55]" />
             <span className="truncate">{sessionTitle}</span>
           </div>
-          <div className="mt-0.5 text-[10px] text-black/[0.35]">快捷键优先 · Ctrl/Cmd + H 截图 · Ctrl/Cmd + Enter 按内置规则执行</div>
+          <div className="mt-0.5 text-[10px] text-black/[0.35]">快捷键优先 · {COMMAND_KEY} + H 截图 · {COMMAND_KEY} + Enter 按内置规则执行</div>
         </div>
         <div className="flex items-center gap-1">
-          <div className="relative">
-            <button className="chat-icon-button gap-1 px-2" onClick={() => setLanguageOpen((value) => !value)}>
-              <span className="text-[11px]">{LANGUAGES.find(([value]) => value === currentLanguage)?.[1] || currentLanguage}</span>
-              <ChevronDown size={12} />
-            </button>
-            {languageOpen && (
-              <div className="chat-language-menu">
-                {LANGUAGES.map(([value, label]) => (
-                  <button
-                    key={value}
-                    className={currentLanguage === value ? "selected" : ""}
-                    onClick={async () => {
-                      await window.electronAPI.updateConfig({ language: value })
-                      window.__LANGUAGE__ = value
-                      setLanguage(value)
-                      setLanguageOpen(false)
-                    }}
-                  >
-                    {label}
-                    {currentLanguage === value && <Check size={12} />}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-          <button className="chat-icon-button" title="历史会话" onClick={() => window.dispatchEvent(new Event("open-history"))}>
+          <span className="chat-auto-language" title="编程语言会根据截图自动识别">
+            自动识别语言
+          </span>
+          <button className="chat-icon-button" title="历史会话" onClick={() => window.dispatchEvent(new Event("open-chat-sessions"))}>
             <History size={15} />
           </button>
           <button
             className={`chat-icon-button ${voiceActive ? "voice-active" : ""}`}
-            title="开始/停止扬声器与麦克风双声道识别（Ctrl/Cmd + Shift + M）"
+            title={`开始/停止扬声器与麦克风双声道识别（${COMMAND_KEY} + Shift + M）`}
             onClick={toggleVoiceInput}
           >
             {voiceActive ? <MicOff size={15} /> : <Mic size={15} />}
@@ -912,9 +892,29 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
           <button className="chat-icon-button" title="设置" onClick={() => window.electronAPI.openSettingsPortal()}>
             <Settings size={15} />
           </button>
-          <button className="chat-icon-button" title="新建会话" onClick={newSession}>
+          <button className="chat-icon-button" title="新建会话" onClick={newSession} disabled={busy}>
             <MessageSquarePlus size={15} />
           </button>
+          {isWindows && (
+            <div className="chat-window-controls" aria-label="窗口控制">
+              <button
+                className="chat-window-button"
+                type="button"
+                title="最小化"
+                onClick={() => void window.electronAPI.minimizeMainWindow()}
+              >
+                <Minus size={14} />
+              </button>
+              <button
+                className="chat-window-button close"
+                type="button"
+                title="关闭"
+                onClick={() => void window.electronAPI.closeMainWindow()}
+              >
+                <X size={14} />
+              </button>
+            </div>
+          )}
         </div>
       </header>
 
@@ -925,12 +925,12 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
             <h1>从截图开始，或者直接输入问题</h1>
             <p>截图会直接发送给视觉模型，由模型判断题型和语言并完成解题。</p>
             <div className="chat-empty-shortcuts">
-              <span><kbd>Ctrl H</kbd> 截图</span>
-              <span><kbd>Ctrl Enter</kbd> 执行当前阶段</span>
-              <span><kbd>Ctrl R</kbd> 重置</span>
+              <span><kbd>{COMMAND_KEY} H</kbd> 截图</span>
+              <span><kbd>{COMMAND_KEY} Enter</kbd> 执行当前阶段</span>
+              <span><kbd>{COMMAND_KEY} R</kbd> 重置</span>
               <span><kbd>/</kbd> 或快速晃动鼠标 4 次</span>
-              <span><kbd>Cmd N</kbd> 新建会话（macOS）</span>
-              <span><kbd>Ctrl L</kbd> 删除末张截图</span>
+              <span><kbd>{COMMAND_KEY} N</kbd> 新建会话</span>
+              <span><kbd>{COMMAND_KEY} L</kbd> 删除末张截图</span>
             </div>
           </div>
         ) : (
@@ -956,7 +956,6 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
               <div className="chat-process-row">
                 <LoaderCircle size={13} className="animate-spin" />
                 <span>{phase}</span>
-                {progress > 0 ? <span className="ml-auto tabular-nums">{progress}%</span> : null}
               </div>
             ) : null}
             {(voiceActive || systemVoiceTranscript || systemVoicePartial) ? (
@@ -1001,7 +1000,7 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
             ref={inputRef}
             value={input}
             disabled={busy}
-            placeholder={attachments.length ? "可选：补充希望 AI 关注的内容…" : "可选输入；主流程请使用 Ctrl+H、Ctrl+Enter…"}
+            placeholder={attachments.length ? "可选：补充希望 AI 关注的内容…" : `可选输入；主流程请使用 ${COMMAND_KEY}+H、${COMMAND_KEY}+Enter…`}
             rows={2}
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={(event) => {
@@ -1019,10 +1018,10 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
           />
           <div className="chat-composer-toolbar">
             <div className="flex items-center gap-1">
-              <button className="chat-tool-button" onClick={takeScreenshot} disabled={busy} title="截图（Ctrl/Cmd + H）">
+              <button className="chat-tool-button" onClick={takeScreenshot} disabled={busy} title={`截图（${COMMAND_KEY} + H）`}>
                 <Camera size={15} /><span>截图</span>
               </button>
-              <button className={`chat-tool-button ${voiceActive ? "voice-active" : ""}`} onClick={toggleVoiceInput} title={`${voiceActive ? "停止" : "开始"}扬声器与麦克风双声道识别（Ctrl/Cmd + Shift + M）`}>
+              <button className={`chat-tool-button ${voiceActive ? "voice-active" : ""}`} onClick={toggleVoiceInput} title={`${voiceActive ? "停止" : "开始"}扬声器与麦克风双声道识别（${COMMAND_KEY} + Shift + M）`}>
                 {voiceActive ? <MicOff size={15} /> : <Mic size={15} />}<span>{voiceActive ? "停止" : "扬声器+麦克风"}</span>
               </button>
               <button
