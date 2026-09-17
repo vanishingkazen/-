@@ -30,6 +30,7 @@ export interface Config {
   interviewContextEnabled: boolean;
   interviewContextPath: string;
   language: string;
+  languageDetectionSource?: "auto" | "detected";
   opacity: number;
 }
 
@@ -59,6 +60,7 @@ export class ConfigHelper extends EventEmitter {
     // `auto` as the persisted default so a previous session cannot silently
     // force all new screenshots to Python.
     language: "auto",
+    languageDetectionSource: "auto",
     opacity: 1.0
   };
 
@@ -180,6 +182,16 @@ export class ConfigHelper extends EventEmitter {
         }
         if (config.questionMode !== "coding" && config.questionMode !== "iq") {
           config.questionMode = "coding";
+        }
+
+        // Older versions persisted the manually selected language directly
+        // in `language`. That value must not become a hidden default now that
+        // language selection has been removed from the UI. A detected value
+        // is explicitly marked by updateConfig below; unmarked legacy values
+        // are migrated back to automatic detection once.
+        if (config.languageDetectionSource !== "detected") {
+          config.language = "auto";
+          config.languageDetectionSource = "auto";
         }
         
         // Sanitize model selections to ensure only allowed models are used
@@ -317,6 +329,9 @@ export class ConfigHelper extends EventEmitter {
       }
       
       const newConfig = { ...currentConfig, ...updates };
+      if (updates.language !== undefined) {
+        newConfig.languageDetectionSource = updates.language === "auto" ? "auto" : "detected";
+      }
       this.saveConfig(newConfig);
       
       // Only emit update event for changes other than opacity

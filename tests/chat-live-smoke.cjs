@@ -115,6 +115,13 @@ async function main() {
     { path: imagePath("icon-64x64.png") }
   ])
 
+  // Files API uploads are remote resources. Remove the temporary test sessions
+  // and let best-effort cleanup finish before the process exits.
+  for (const sessionId of [multiTurnSession.id, longSession.id, imageSession.id]) {
+    service.deleteSession(sessionId)
+  }
+  await new Promise((resolve) => setTimeout(resolve, 500))
+
   console.log(JSON.stringify({
     provider: config.apiProvider,
     model: config.extractionModel,

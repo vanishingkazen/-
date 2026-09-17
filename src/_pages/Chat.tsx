@@ -26,6 +26,7 @@ import csharp from "react-syntax-highlighter/dist/esm/languages/prism/csharp"
 import go from "react-syntax-highlighter/dist/esm/languages/prism/go"
 import rust from "react-syntax-highlighter/dist/esm/languages/prism/rust"
 import type { HistoryRecord, SavedSolutionData } from "../types/history"
+import type { ChatMessage as StoredChatMessage } from "../types/chat"
 import type { ProblemStatementData } from "../types/solutions"
 import { useToast } from "../contexts/toast"
 import { COMMAND_KEY, isWindows } from "../utils/platform"
@@ -49,6 +50,19 @@ interface ChatMessage {
   streaming?: boolean
   speaker?: "用户A" | "用户B"
   stage?: "提交截图" | "题目提取" | "IQ 视觉解题" | "解答" | "调试" | "追问" | "语音输入" | "对话"
+}
+
+async function hydrateStoredMessages(messages: StoredChatMessage[]): Promise<ChatMessage[]> {
+  return Promise.all(messages.map(async (message) => ({
+    id: message.id,
+    role: message.role,
+    content: message.content,
+    images: await Promise.all((message.images || []).map(async (image) => ({
+      path: image.path,
+      preview: image.preview || await window.electronAPI.getImagePreview(image.path).catch(() => "")
+    }))),
+    streaming: message.status === "streaming"
+  })))
 }
 
 interface AudioCaptureChain {
@@ -498,7 +512,8 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
   }, [showToast])
 
   useEffect(() => {
-    void window.electronAPI.getChatSession().then((session) => {
+    void (async () => {
+      const session = await window.electronAPI.getChatSession()
       if (!session) return
       // Do not let a slow initial IPC response overwrite a session selected or
       // created by the user while the window was mounting.
@@ -506,14 +521,8 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
       setSessionId(session.id)
       sessionIdRef.current = session.id
       setSessionTitle(session.title || "新对话")
-      setMessages(session.messages.map((message) => ({
-        id: message.id,
-        role: message.role,
-        content: message.content,
-        images: message.images?.map((image) => ({ path: image.path, preview: image.preview || "" })),
-        streaming: message.status === "streaming"
-      })))
-    })
+      setMessages(await hydrateStoredMessages(session.messages))
+    })().catch(() => {})
     void window.electronAPI.getInterviewContextStatus().then((status) => {
       setInterviewContextEnabled(status.enabled && status.available)
       setInterviewContextAvailable(status.available)
@@ -581,13 +590,7 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
     setAttachments([])
     setPhase("")
     activeAssistantId.current = null
-    setMessages(session.messages.map((message) => ({
-      id: message.id,
-      role: message.role,
-      content: message.content,
-      images: message.images?.map((image) => ({ path: image.path, preview: image.preview || "" })),
-      streaming: false
-    })))
+    setMessages(await hydrateStoredMessages(session.messages))
     const restoredLanguage = typeof record.language === "string" ? record.language.trim().toLowerCase() : ""
     if (restoredLanguage && restoredLanguage !== "auto") {
       setLanguage(restoredLanguage)
@@ -620,13 +623,7 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage, setLanguage }) => {
       setAttachments([])
       setPhase("")
       activeAssistantId.current = null
-      setMessages(session.messages.map((message) => ({
-        id: message.id,
-        role: message.role,
-        content: message.content,
-        images: message.images?.map((image) => ({ path: image.path, preview: image.preview || "" })),
-        streaming: message.status === "streaming"
-      })))
+      void hydrateStoredMessages(session.messages).then(setMessages).catch(() => setMessages([]))
     }
     window.addEventListener("history-record-selected", onHistorySelected)
     window.addEventListener("chat-session-selected", onChatSessionSelected)

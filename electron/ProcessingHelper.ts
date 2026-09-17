@@ -49,7 +49,7 @@ const isDeepSeekStreaming = (
 ): boolean => config.streamingEnabled !== false && isOfficialDeepSeekEndpoint(baseURL)
 
 const normalizeDetectedLanguage = (value: string): string | null => {
-  const normalized = value.trim().toLowerCase().replace(/[.#\s-]+/g, "")
+  const normalized = value.trim().toLowerCase().replace(/\s+/g, "")
   const aliases: Record<string, string> = {
     py: "python",
     python: "python",
@@ -59,8 +59,10 @@ const normalizeDetectedLanguage = (value: string): string | null => {
     typescript: "typescript",
     java: "java",
     cpp: "cpp",
+    "c++": "cpp",
     cplusplus: "cpp",
     c: "cpp",
+    "c#": "csharp",
     csharp: "csharp",
     cs: "csharp",
     go: "golang",
@@ -394,9 +396,12 @@ export class ProcessingHelper {
         }
 
         const answer = result.data
+        const detectedLanguage = result.language || "auto"
+        configHelper.updateConfig({ language: detectedLanguage })
         if (result.language) {
-          configHelper.updateConfig({ language: result.language })
           mainWindow.webContents.send("language-detected", { language: result.language })
+        } else {
+          mainWindow.webContents.send("language-detected", { language: "auto" })
         }
         const title = answer
           .split(/\r?\n/)
@@ -420,7 +425,7 @@ export class ProcessingHelper {
         historyHelper.saveSolution(
           problemInfo,
           solution,
-          result.language || config.language || "auto",
+          detectedLanguage,
           existingScreenshots
         )
 

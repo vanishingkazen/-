@@ -6,10 +6,25 @@ import { OpenAI } from "openai"
 import Anthropic from "@anthropic-ai/sdk"
 import * as axios from "axios"
 import { configHelper } from "./ConfigHelper"
+import { imageDataUrl, readImageMetadata, resizeImageToPng, type ChatImageMimeType } from "./ChatImageUtils"
+import {
+  deleteDeepSeekFile,
+  fileOwnerFingerprint,
+  supportsDeepSeekFilesApi,
+  uploadDeepSeekImage,
+  type DeepSeekFilesConfig
+} from "./DeepSeekFilesApi"
 
 export interface ChatAttachment {
   path: string
   preview?: string
+  transportPath?: string
+  mimeType?: ChatImageMimeType
+  width?: number
+  height?: number
+  fileId?: string
+  fileOwnerHash?: string
+  imageSummary?: string
 }
 
 export interface ChatMessage {
@@ -43,6 +58,8 @@ export interface ChatServiceDeps {
 type ProviderMessage = { role: "system" | "user" | "assistant"; content: string }
 
 const SYSTEM_PROMPT = "你是一个多轮对话助手，能够处理文本、代码和截图。保持上下文连续，直接回答用户，所有说明和代码注释使用简体中文。"
+const IMAGE_TOKEN_ESTIMATE = 1024
+const MIN_IMAGE_TEXT_TOKENS = 64
 
 const LANGUAGE_ALIASES: Record<string, string> = {
   py: "python",
@@ -126,13 +143,30 @@ function safeStorageComponent(value: string): string {
   return value.replace(/[^a-z0-9_-]/gi, "_") || "session"
 }
 
+function normalizeAttachment(raw: unknown): ChatAttachment | null {
+  if (!raw || typeof raw !== "object") return null
+  const value = raw as Partial<ChatAttachment>
+  if (typeof value.path !== "string" || !value.path) return null
+  return {
+    path: value.path,
+    ...(typeof value.preview === "string" ? { preview: value.preview } : {}),
+    ...(typeof value.transportPath === "string" ? { transportPath: value.transportPath } : {}),
+    ...(value.mimeType === "image/png" || value.mimeType === "image/jpeg" || value.mimeType === "image/gif" || value.mimeType === "image/webp" ? { mimeType: value.mimeType } : {}),
+    ...(Number.isFinite(value.width) ? { width: value.width } : {}),
+    ...(Number.isFinite(value.height) ? { height: value.height } : {}),
+    ...(typeof value.fileId === "string" && value.fileId ? { fileId: value.fileId } : {}),
+    ...(typeof value.fileOwnerHash === "string" && value.fileOwnerHash ? { fileOwnerHash: value.fileOwnerHash } : {}),
+    ...(typeof value.imageSummary === "string" ? { imageSummary: value.imageSummary } : {})
+  }
+}
+
 function normalizeMessage(raw: unknown): ChatMessage | null {
   if (!raw || typeof raw !== "object") return null
   const value = raw as Partial<ChatMessage>
   if (value.role !== "user" && value.role !== "assistant") return null
   if (typeof value.content !== "string") return null
   const images = Array.isArray(value.images)
-    ? value.images.filter((image): image is ChatAttachment => Boolean(image && typeof image.path === "string"))
+    ? value.images.map(normalizeAttachment).filter((image): image is ChatAttachment => Boolean(image))
     : []
   return {
     id: typeof value.id === "string" && value.id ? value.id : randomUUID(),
@@ -215,7 +249,18 @@ class ChatStore {
         sessions.pop()
         sessions.push(current)
       }
-      const payload = JSON.stringify({ version: 1, currentSessionId: this.currentSessionId, sessions }, null, 2)
+      const persistedSessions = sessions.map((session) => ({
+        ...session,
+        messages: session.messages.map((message) => ({
+          ...message,
+          images: message.images.map((image) => {
+            const persistedImage = { ...image }
+            delete persistedImage.preview
+            return persistedImage
+          })
+        }))
+      }))
+      const payload = JSON.stringify({ version: 1, currentSessionId: this.currentSessionId, sessions: persistedSessions }, null, 2)
       const tempPath = this.filePath + ".tmp"
       fs.writeFileSync(tempPath, payload, "utf8")
       fs.renameSync(tempPath, this.filePath)
@@ -238,8 +283,12 @@ class ChatStore {
     return true
   }
 
+  public getAttachmentDirectory(sessionId: string): string {
+    return path.join(path.dirname(this.filePath), "chat-attachments", safeStorageComponent(sessionId))
+  }
+
   public copyAttachments(sessionId: string, messageId: string, images: ChatAttachment[]): ChatAttachment[] {
-    const directory = path.join(path.dirname(this.filePath), "chat-attachments", safeStorageComponent(sessionId))
+    const directory = this.getAttachmentDirectory(sessionId)
     return images.map((image, index) => {
       try {
         if (!image?.path || !fs.existsSync(image.path)) return image
@@ -290,7 +339,7 @@ function estimateTokens(messages: Array<{ content: string; images?: ChatAttachme
     const ascii = [...message.content].filter((character) => character.charCodeAt(0) < 128).length
     const nonAscii = message.content.length - ascii
     const textTokens = Math.ceil(ascii / 4) + nonAscii
-    const imageTokens = (message.images?.length || 0) * 1200
+    const imageTokens = (message.images?.length || 0) * IMAGE_TOKEN_ESTIMATE
     return total + textTokens + imageTokens
   }, 0)
 }
@@ -344,7 +393,10 @@ export class ChatService {
 
   public deleteSession(id: string): boolean {
     if (this.abortController) return false
-    return this.store.delete(id)
+    const session = this.store.get(id)
+    const success = this.store.delete(id)
+    if (success && session) void this.deleteRemoteFiles(session)
+    return success
   }
 
   public resetCurrentSession(): ChatSession {
@@ -375,6 +427,11 @@ export class ChatService {
       : []
     if (!content && !safeImages.length) return { success: false, error: "消息不能为空" }
     if (this.abortController) return { success: false, error: "上一条消息仍在处理中，请稍后重试" }
+
+    // A new screenshot starts a fresh detection attempt. Do not let the
+    // language detected for a previous screenshot bias this one when the
+    // model cannot identify a language in the new image.
+    if (safeImages.length) configHelper.updateConfig({ language: "auto" })
 
     const userMessage: ChatMessage = {
       id: randomUUID(),
@@ -460,7 +517,7 @@ export class ChatService {
 
     const transcript = [
       session.summary ? `已有摘要：${session.summary}` : "",
-      ...older.map((message) => `${message.role === "user" ? "用户" : "助手"}：${message.content}${message.images.length ? ` [包含 ${message.images.length} 张截图]` : ""}`)
+      ...older.map((message) => `${message.role === "user" ? "用户" : "助手"}：${message.content}${this.describeImagesForSummary(message.images)}`)
     ].filter(Boolean).join("\n\n")
 
     try {
@@ -469,7 +526,8 @@ export class ChatService {
         console.warn("Chat context summary was empty; keeping original history")
         return
       }
-      session.summary = summary
+      const imageReferences = this.buildImageReferenceAppendix(older)
+      session.summary = [summary, imageReferences].filter(Boolean).join("\n\n")
       session.messages = recent
       session.updatedAt = new Date().toISOString()
       this.store.save()
@@ -504,28 +562,17 @@ export class ChatService {
     if (estimateTokens(history) > historyBudget) {
       history = this.fitHistoryToBudget(history, historyBudget)
     }
-    const openaiMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-      { role: "system", content: system },
-      ...history.map((message): OpenAI.Chat.Completions.ChatCompletionMessageParam => {
-        if (message.role === "assistant") return { role: "assistant", content: message.content }
-        const imageUrls = message.images
-          .map((image) => this.imageDataUrl(image.path))
-          .filter((url): url is string => Boolean(url))
-        if (!imageUrls.length) return { role: "user", content: message.content }
-        return {
-          role: "user",
-          content: [
-            { type: "text", text: message.content },
-            ...imageUrls.map((url) => ({
-              type: "image_url" as const,
-              image_url: { url }
-            }))
-          ]
-        }
-      })
-    ]
+
+    const transportChanged = this.prepareHistoryImageTransports(session, history)
+    if (transportChanged) {
+      this.syncHistoryAttachments(session, history)
+      this.store.save()
+    }
 
     if (config.apiProvider === "openai" || config.apiProvider === "openai-compatible") {
+      const openaiMessages = await this.buildOpenAIMessages(session, history, system, config, signal)
+      this.syncHistoryAttachments(session, history)
+      this.store.save()
       const client = new OpenAI({
         apiKey: config.apiKey,
         ...(config.apiProvider === "openai-compatible" && config.baseURL ? { baseURL: config.baseURL.replace(/\/$/, "") } : {}),
@@ -571,9 +618,10 @@ export class ChatService {
       for (const message of history) {
         parts.push({ text: `${message.role === "user" ? "用户" : "助手"}：${message.content}` })
         for (const image of message.images) {
-          const url = this.imageDataUrl(image.path)
+          const payloadPath = image.transportPath || image.path
+          const url = imageDataUrl(payloadPath, image.mimeType)
           if (!url) continue
-          parts.push({ inlineData: { mimeType: "image/png", data: url.split(",")[1] || "" } })
+          parts.push({ inlineData: { mimeType: image.mimeType || "image/png", data: url.split(",")[1] || "" } })
         }
       }
       const response = await axios.default.post(
@@ -597,9 +645,17 @@ export class ChatService {
         content: [
           { type: "text" as const, text: message.content },
           ...message.images.flatMap((image) => {
-            const url = this.imageDataUrl(image.path)
+            const payloadPath = image.transportPath || image.path
+            const url = imageDataUrl(payloadPath, image.mimeType)
             if (!url) return []
-            return [{ type: "image" as const, source: { type: "base64" as const, media_type: "image/png" as const, data: url.split(",")[1] || "" } }]
+            return [{
+              type: "image" as const,
+              source: {
+                type: "base64" as const,
+                media_type: image.mimeType || "image/png",
+                data: url.split(",")[1] || ""
+              }
+            }]
           })
         ]
       }))
@@ -609,6 +665,178 @@ export class ChatService {
     return result
   }
 
+  private prepareHistoryImageTransports(session: ChatSession, history: ChatMessage[]): boolean {
+    let changed = false
+    for (const message of history) {
+      for (let index = 0; index < message.images.length; index += 1) {
+        const current = message.images[index]
+        const prepared = this.prepareTransportAttachment(session.id, message.id, index, current)
+        if (prepared !== current) {
+          message.images[index] = prepared
+          changed = true
+        }
+      }
+    }
+    return changed
+  }
+
+  private prepareTransportAttachment(
+    sessionId: string,
+    messageId: string,
+    imageIndex: number,
+    image: ChatAttachment
+  ): ChatAttachment {
+    if (!fs.existsSync(image.path)) return image
+    if (image.transportPath && fs.existsSync(image.transportPath)) return image
+    try {
+      const metadata = readImageMetadata(image.path)
+      const targetPath = path.join(
+        this.store.getAttachmentDirectory(sessionId),
+        `${safeStorageComponent(messageId)}-${imageIndex}-transport.png`
+      )
+      const prepared = resizeImageToPng(image.path, targetPath, metadata)
+      if (!prepared) {
+        return {
+          ...image,
+          mimeType: metadata.mimeType,
+          ...(metadata.width ? { width: metadata.width } : {}),
+          ...(metadata.height ? { height: metadata.height } : {})
+        }
+      }
+      return {
+        ...image,
+        ...(prepared.path !== image.path ? { transportPath: prepared.path } : {}),
+        mimeType: prepared.mimeType,
+        ...(prepared.width ? { width: prepared.width } : {}),
+        ...(prepared.height ? { height: prepared.height } : {})
+      }
+    } catch (error) {
+      console.warn("Failed to prepare chat image for transport:", error)
+      return {
+        ...image,
+        mimeType: image.mimeType || this.safeImageMimeType(image.path)
+      }
+    }
+  }
+
+  private safeImageMimeType(filePath: string): ChatImageMimeType {
+    try {
+      return readImageMetadata(filePath).mimeType
+    } catch {
+      return "image/png"
+    }
+  }
+
+  private async buildOpenAIMessages(
+    session: ChatSession,
+    history: ChatMessage[],
+    system: string,
+    config: ReturnType<typeof configHelper.loadConfig>,
+    signal: AbortSignal
+  ): Promise<OpenAI.Chat.Completions.ChatCompletionMessageParam[]> {
+    const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [{ role: "system", content: system }]
+    const filesConfig: DeepSeekFilesConfig = {
+      apiKey: config.apiKey,
+      baseURL: config.baseURL,
+      provider: config.apiProvider
+    }
+    const canUseFilesApi = supportsDeepSeekFilesApi(filesConfig)
+    const ownerHash = canUseFilesApi ? fileOwnerFingerprint(filesConfig) : ""
+
+    for (const message of history) {
+      if (message.role === "assistant") {
+        messages.push({ role: "assistant", content: message.content })
+        continue
+      }
+
+      const parts: Array<Record<string, unknown>> = [{ type: "text", text: message.content }]
+      const imageParts = await Promise.all(message.images.map(async (originalImage, index) => {
+        let image = originalImage
+        if (canUseFilesApi) {
+          if (!image.fileId || image.fileOwnerHash !== ownerHash) {
+            try {
+              image = this.prepareTransportAttachment(session.id, message.id, index, image)
+              const uploaded = await uploadDeepSeekImage(
+                filesConfig,
+                image.transportPath || image.path,
+                signal
+              )
+              image = { ...image, fileId: uploaded.id, fileOwnerHash: ownerHash }
+              message.images[index] = image
+            } catch (error) {
+              if (error instanceof Error && error.name === "AbortError") throw error
+              console.warn("DeepSeek Files API upload failed; falling back to inline Base64:", error)
+            }
+          }
+          if (image.fileId && image.fileOwnerHash === ownerHash) {
+            return { type: "file", file_id: image.fileId } as Record<string, unknown>
+          }
+        }
+
+        image = this.prepareTransportAttachment(session.id, message.id, index, image)
+        message.images[index] = image
+        const payloadPath = image.transportPath || image.path
+        const url = imageDataUrl(payloadPath, image.mimeType)
+        if (!url) return null
+        return {
+          type: "image_url",
+          image_url: {
+            url,
+            detail: "original"
+          }
+        }
+      }))
+      for (const imagePart of imageParts) {
+        if (imagePart) parts.push(imagePart)
+      }
+
+      messages.push({
+        role: "user",
+        content: parts.length === 1
+          ? message.content
+          : parts as unknown as OpenAI.Chat.Completions.ChatCompletionContentPart[]
+      })
+    }
+    return messages
+  }
+
+  private syncHistoryAttachments(session: ChatSession, history: ChatMessage[]): void {
+    const byId = new Map(history.map((message) => [message.id, message]))
+    for (const message of session.messages) {
+      const updated = byId.get(message.id)
+      if (updated) message.images = updated.images
+    }
+  }
+
+  private describeImagesForSummary(images: ChatAttachment[]): string {
+    if (!images.length) return ""
+    const references = images.map((image) => {
+      if (image.imageSummary) return image.imageSummary
+      if (image.fileId) return `file_id=${image.fileId}`
+      return `本地附件=${path.basename(image.path)}`
+    })
+    return ` [图片引用：${references.join("；")}]`
+  }
+
+  private buildImageReferenceAppendix(messages: ChatMessage[]): string {
+    const lines: string[] = []
+    const seen = new Set<string>()
+    for (const message of messages) {
+      for (const image of message.images) {
+        const reference = image.imageSummary
+          ? image.imageSummary
+          : image.fileId
+            ? `file_id=${image.fileId}`
+            : `本地附件=${path.basename(image.path)}`
+        const key = `${reference}|${message.content.slice(0, 80)}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        lines.push(`- ${reference}；关联内容：${message.content.slice(0, 160) || "无"}`)
+      }
+    }
+    return lines.length ? `历史图片引用：\n${lines.join("\n")}` : ""
+  }
+
   private fitHistoryToBudget(messages: ChatMessage[], budget: number): ChatMessage[] {
     const history = messages.map((message) => ({ ...message, images: [...message.images] }))
     while (history.length > 1 && estimateTokens(history) > budget) history.shift()
@@ -616,13 +844,21 @@ export class ChatService {
     if (estimateTokens(history) <= budget) return history
 
     const last = history[history.length - 1]
-    const imageBudget = Math.floor((budget - estimateTokens([{ content: "" }])) / 1200)
-    const images = imageBudget >= last.images.length ? last.images : []
-    const textBudget = Math.max(0, budget - images.length * 1200)
+    const imageTokens = last.images.length * IMAGE_TOKEN_ESTIMATE
+    if (last.images.length && imageTokens + MIN_IMAGE_TEXT_TOKENS > budget) {
+      throw new Error("当前上下文预算不足以发送全部截图，请提高上下文窗口或降低最大输出长度")
+    }
+    if (budget <= 0) {
+      throw new Error("当前上下文预算不足，请提高上下文窗口或降低最大输出长度")
+    }
+
+    const textBudget = Math.max(0, budget - imageTokens)
     history[history.length - 1] = {
       ...last,
-      content: truncateToTokenBudget(last.content, textBudget),
-      images
+      content: truncateToTokenBudget(last.content, textBudget)
+    }
+    if (estimateTokens(history) > budget) {
+      throw new Error("当前上下文预算不足，请提高上下文窗口或降低最大输出长度")
     }
     return history
   }
@@ -664,6 +900,32 @@ export class ChatService {
     return response.content.filter((block) => block.type === "text").map((block) => block.text).join("\n")
   }
 
+  private async deleteRemoteFiles(session: ChatSession): Promise<void> {
+    const config = configHelper.loadConfig()
+    const filesConfig: DeepSeekFilesConfig = {
+      apiKey: config.apiKey,
+      baseURL: config.baseURL,
+      provider: config.apiProvider
+    }
+    if (!supportsDeepSeekFilesApi(filesConfig)) return
+
+    const ownerHash = fileOwnerFingerprint(filesConfig)
+    const fileIds = new Set<string>()
+    for (const message of session.messages) {
+      for (const image of message.images) {
+        if (image.fileId && image.fileOwnerHash === ownerHash) fileIds.add(image.fileId)
+      }
+    }
+
+    await Promise.allSettled([...fileIds].map(async (fileId) => {
+      try {
+        await deleteDeepSeekFile(filesConfig, fileId)
+      } catch (error) {
+        console.warn(`Failed to delete DeepSeek file ${fileId}:`, error)
+      }
+    }))
+  }
+
   private emitFinalDelta(requestId: string, sessionId: string, content: string): void {
     this.deps.getMainWindow()?.webContents.send("chat-stream", {
       requestId,
@@ -673,13 +935,4 @@ export class ChatService {
     })
   }
 
-  private imageDataUrl(filePath: string): string | null {
-    try {
-      if (!fs.existsSync(filePath)) return null
-      const data = fs.readFileSync(filePath).toString("base64")
-      return `data:image/png;base64,${data}`
-    } catch {
-      return null
-    }
-  }
 }

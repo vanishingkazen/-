@@ -85,6 +85,7 @@ export interface ElectronAPI {
   triggerScreenshot: () => Promise<{ success: boolean; error?: string }>
   triggerProcessScreenshots: (userRequest?: string) => Promise<{ success: boolean; error?: string }>
   getChatSession: (id?: string) => Promise<import("./chat").ChatSession | null>
+  getImagePreview: (path: string) => Promise<string>
   newChatSession: (seed?: import("./chat").ChatSessionSeed) => Promise<import("./chat").ChatSession | null>
   selectChatSession: (id: string) => Promise<import("./chat").ChatSession | null>
   listChatSessions: () => Promise<import("./chat").ChatSession[]>

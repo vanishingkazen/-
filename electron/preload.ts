@@ -244,6 +244,7 @@ const electronAPI = {
   triggerProcessScreenshots: (userRequest = "") =>
     ipcRenderer.invoke("trigger-process-screenshots", userRequest),
   getChatSession: (id?: string) => ipcRenderer.invoke("chat-get-session", id),
+  getImagePreview: (path: string) => ipcRenderer.invoke("get-image-preview", path),
   newChatSession: (seed?: unknown) => ipcRenderer.invoke("chat-new-session", seed),
   selectChatSession: (id: string) => ipcRenderer.invoke("chat-select-session", id),
   listChatSessions: () => ipcRenderer.invoke("chat-list-sessions"),

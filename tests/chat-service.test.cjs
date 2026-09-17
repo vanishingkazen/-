@@ -16,6 +16,8 @@ const appDataPath = path.join(tempRoot, "appData")
 let openAICalls = []
 let openAIResponder = defaultOpenAIResponder
 let axiosCalls = []
+let axiosDeletes = []
+let nativeImageResizeCalls = []
 let axiosResponder = defaultAxiosResponder
 let anthropicCalls = []
 let anthropicResponder = defaultAnthropicResponder
@@ -105,12 +107,20 @@ const axiosMock = {
   default: {
     post: async (url, body, options = {}) => {
       axiosCalls.push({ url, body, options })
-      return axiosResponder(url, body)
+      return axiosResponder(url, body, options)
+    },
+    delete: async (url, options = {}) => {
+      axiosDeletes.push({ url, options })
+      return { data: { id: url.split("/").pop(), deleted: true } }
     }
   },
   post: async (url, body, options = {}) => {
     axiosCalls.push({ url, body, options })
-    return axiosResponder(url, body)
+    return axiosResponder(url, body, options)
+  },
+  delete: async (url, options = {}) => {
+    axiosDeletes.push({ url, options })
+    return { data: { id: url.split("/").pop(), deleted: true } }
   }
 }
 
@@ -124,7 +134,23 @@ Module._load = function patchedLoad(request, parent, isMain) {
           return appDataPath
         }
       },
-      BrowserWindow: class BrowserWindow {}
+      BrowserWindow: class BrowserWindow {},
+      nativeImage: {
+        createFromPath(filePath) {
+          const buffer = fs.readFileSync(filePath)
+          const width = buffer.length >= 24 ? buffer.readUInt32BE(16) : 32
+          const height = buffer.length >= 24 ? buffer.readUInt32BE(20) : 32
+          return {
+            isEmpty: () => false,
+            getSize: () => ({ width, height }),
+            resize: ({ width: nextWidth, height: nextHeight }) => {
+              nativeImageResizeCalls.push({ filePath, width: nextWidth, height: nextHeight })
+              return { toPNG: () => fakePngBuffer(nextWidth, nextHeight) }
+            },
+            toPNG: () => buffer
+          }
+        }
+      }
     }
   }
   if (request === "openai") return { OpenAI: MockOpenAI }
@@ -153,6 +179,8 @@ const { configHelper } = require(path.join(ROOT, "electron", "ConfigHelper.ts"))
 function defaultConfig() {
   return {
     ...configHelper.loadConfig(),
+    language: "auto",
+    languageDetectionSource: "auto",
     apiProvider: "openai-compatible",
     apiKey: "test-api-key",
     baseURL: "https://chat.example.test/v1",
@@ -172,6 +200,8 @@ function setup(overrides = {}) {
 
   openAICalls = []
   axiosCalls = []
+  axiosDeletes = []
+  nativeImageResizeCalls = []
   anthropicCalls = []
   openAIResponder = defaultOpenAIResponder
   axiosResponder = defaultAxiosResponder
@@ -189,9 +219,20 @@ function setup(overrides = {}) {
   return { service, events }
 }
 
-function pngFile(name) {
+function fakePngBuffer(width, height) {
+  const buffer = Buffer.alloc(24)
+  buffer.writeUInt32BE(0x89504e47, 0)
+  buffer.writeUInt32BE(0x0d0a1a0a, 4)
+  buffer.writeUInt32BE(width, 16)
+  buffer.writeUInt32BE(height, 20)
+  return buffer
+}
+
+function pngFile(name, width = 0, height = 0) {
   const filePath = path.join(tempRoot, name)
-  fs.writeFileSync(filePath, Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"))
+  fs.writeFileSync(filePath, width && height
+    ? fakePngBuffer(width, height)
+    : Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"))
   return filePath
 }
 
@@ -264,6 +305,145 @@ test("多图片输入会编码全部有效图片并跳过损坏路径", async ()
   assert.equal(followUp.success, true)
   const followUpImageMessage = openAICalls.at(-1).body.messages.find((message) => Array.isArray(message.content))
   assert.equal(followUpImageMessage.content.filter((part) => part.type === "image_url").length, 3)
+})
+
+test("DeepSeek 图片走 Files API，并在后续轮次复用 file_id", async () => {
+  const { service } = setup({
+    apiKey: "deepseek-test-key",
+    baseURL: "https://api.deepseek.com",
+    streamingEnabled: false
+  })
+  axiosResponder = async (url) => {
+    if (url.endsWith("/files")) return { data: { id: "file-api-test-1", filename: "image.png" } }
+    return defaultAxiosResponder(url, {})
+  }
+  const session = service.createSession()
+  const image = pngFile("deepseek-files-api.png")
+
+  const first = await service.sendMessage(session.id, "分析这张截图", [{ path: image }], "request-files-1")
+  assert.equal(first.success, true)
+  const uploadCalls = axiosCalls.filter((call) => call.url.endsWith("/files"))
+  assert.equal(uploadCalls.length, 1)
+  const firstContent = resolvedUserMessage(openAICalls[0].body).content
+  assert.deepEqual(firstContent[1], { type: "file", file_id: "file-api-test-1" })
+  const storedImage = service.getCurrentSession().messages[0].images[0]
+  assert.equal(storedImage.fileId, "file-api-test-1")
+  assert.equal(typeof storedImage.fileOwnerHash, "string")
+
+  const second = await service.sendMessage(session.id, "继续分析", [], "request-files-2")
+  assert.equal(second.success, true)
+  const secondRequest = openAICalls[1].body.messages.find((message) => Array.isArray(message.content))
+  assert.deepEqual(secondRequest.content[1], { type: "file", file_id: "file-api-test-1" })
+  assert.equal(axiosCalls.filter((call) => call.url.endsWith("/files")).length, 1)
+
+  const persisted = JSON.parse(fs.readFileSync(path.join(appDataPath, "steamgamecode", "chat-sessions.json"), "utf8"))
+  const persistedImage = persisted.sessions[0].messages[0].images[0]
+  assert.equal(persistedImage.fileId, "file-api-test-1")
+  assert.equal(persistedImage.preview, undefined)
+
+  assert.equal(service.deleteSession(session.id), true)
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(axiosDeletes.some((call) => call.url.endsWith("/file-api-test-1")), true)
+})
+
+test("发送 4 张图片会缩放到 1650px、保留 PNG 并显式使用 original", async () => {
+  const { service } = setup()
+  const session = service.createSession()
+  const image = pngFile("large-screenshot.png", 2940, 1912)
+
+  const result = await service.sendMessage(session.id, "请分析这张截图", [{ path: image }], "request-resize")
+  assert.equal(result.success, true)
+  assert.equal(nativeImageResizeCalls.length, 1)
+  assert.deepEqual(nativeImageResizeCalls[0].width, 1650)
+  assert.deepEqual(nativeImageResizeCalls[0].height, 1073)
+
+  const storedImage = service.getCurrentSession().messages[0].images[0]
+  assert.equal(Boolean(storedImage.transportPath && fs.existsSync(storedImage.transportPath)), true)
+  const resized = fs.readFileSync(storedImage.transportPath)
+  assert.equal(resized.readUInt32BE(16), 1650)
+  assert.equal(resized.readUInt32BE(20), 1073)
+
+  const imagePart = resolvedUserMessage(openAICalls[0].body).content.find((part) => part.type === "image_url")
+  assert.equal(imagePart.image_url.detail, "original")
+  assert.match(imagePart.image_url.url, /^data:image\/png;base64,/)
+  assert.equal(imagePart.image_url.url.endsWith(resized.toString("base64")), true)
+})
+
+test("图片 MIME 根据文件内容识别，不会被固定写成 PNG", async () => {
+  const { service } = setup()
+  const session = service.createSession()
+  const imagePath = path.join(tempRoot, "photo.bin")
+  fs.writeFileSync(imagePath, Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]))
+
+  const result = await service.sendMessage(session.id, "分析图片", [{ path: imagePath }], "request-mime")
+  assert.equal(result.success, true)
+  const imagePart = resolvedUserMessage(openAICalls[0].body).content.find((part) => part.type === "image_url")
+  assert.match(imagePart.image_url.url, /^data:image\/jpeg;base64,/)
+})
+
+test("图片超出上下文预算时明确失败，不会静默丢弃当前截图", async () => {
+  const { service } = setup({ contextWindowTokens: 8192, maxOutputTokens: 4096 })
+  const session = service.createSession()
+  const images = Array.from({ length: 4 }, (_, index) => ({ path: pngFile(`budget-image-${index}.png`) }))
+
+  const result = await service.sendMessage(session.id, "分析四张图片", images, "request-image-budget")
+  assert.equal(result.success, false)
+  assert.match(result.error, /上下文预算不足/)
+  assert.equal(openAICalls.length, 0)
+  assert.equal(service.getCurrentSession().messages[0].images.length, 4)
+})
+
+test("上下文压缩会保存图片 file_id 引用", async () => {
+  const { service } = setup({
+    apiKey: "deepseek-test-key",
+    baseURL: "https://api.deepseek.com",
+    contextMessageLimit: 4,
+    contextWindowTokens: 8192,
+    maxOutputTokens: 1024,
+    streamingEnabled: false
+  })
+  axiosResponder = async (url) => {
+    if (url.endsWith("/files")) return { data: { id: "file-api-summary-1", filename: "image.png" } }
+    return defaultAxiosResponder(url, {})
+  }
+  const session = service.createSession()
+  const image = pngFile("summary-image.png")
+
+  for (let index = 1; index <= 4; index += 1) {
+    const result = await service.sendMessage(
+      session.id,
+      index === 1 ? "请记住这张截图" : `继续第 ${index} 轮`,
+      index === 1 ? [{ path: image }] : [],
+      `request-summary-image-${index}`
+    )
+    assert.equal(result.success, true)
+  }
+
+  assert.match(service.getCurrentSession().summary, /file_id=file-api-summary-1/)
+})
+
+test("截图回答中的语言标记会自动更新配置并从用户可见内容移除", async () => {
+  const { service, events } = setup()
+  const session = service.createSession()
+  const screenshot = pngFile("language-detection.png")
+  openAIResponder = async () => completion("[LANGUAGE: TypeScript]\n\n请使用截图中的接口实现。")
+
+  const result = await service.sendMessage(
+    session.id,
+    "请分析这张截图",
+    [{ path: screenshot }],
+    "request-language"
+  )
+
+  assert.equal(result.success, true)
+  assert.equal(result.content, "请使用截图中的接口实现。")
+  assert.equal(configHelper.loadConfig().language, "typescript")
+  assert.equal(configHelper.loadConfig().languageDetectionSource, "detected")
+  assert.deepEqual(
+    events.find((event) => event.channel === "language-detected")?.payload,
+    { language: "typescript" }
+  )
+  assert.equal(service.getCurrentSession().messages.at(-1).content, "请使用截图中的接口实现。")
 })
 
 test("图片-only 消息使用默认提示词，空消息直接拒绝", async () => {

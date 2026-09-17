@@ -157,6 +157,8 @@ const { initializeIpcHandlers } = require(path.join(ROOT, "electron", "ipcHandle
 function defaultConfig() {
   return {
     ...configHelper.loadConfig(),
+    language: "auto",
+    languageDetectionSource: "auto",
     apiProvider: "openai-compatible",
     apiKey: "test-api-key",
     baseURL: "https://chat.example.test/v1",

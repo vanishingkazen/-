@@ -1,6 +1,13 @@
 export interface ChatAttachment {
   path: string
   preview?: string
+  transportPath?: string
+  mimeType?: "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+  width?: number
+  height?: number
+  fileId?: string
+  fileOwnerHash?: string
+  imageSummary?: string
 }
 
 export interface ChatMessage {
