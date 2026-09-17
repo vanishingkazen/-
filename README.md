@@ -290,6 +290,16 @@ Linux:   ~/.local/state/steamgamecode/logs/startup.log
 
 历史截图默认保留 3 天，文字题目和解答会持续保留，直到手动删除。
 
+聊天会话和附件：
+
+```text
+~/Library/Application Support/steamgamecode/chat-sessions.json
+~/Library/Application Support/steamgamecode/chat-attachments
+```
+
+- 删除聊天会话会同时删除本地附件；应用启动时也会清理已经不在会话列表中的遗留附件目录。
+- 使用 DeepSeek 官方接口时，聊天图片会先上传到 Files API 并复用 `file_id`；删除会话或会话超出保留上限（最近 50 个）后会回收远端文件，本地会话仍可继续使用并按需重新上传。
+
 崩溃恢复日志：
 
 ```text
