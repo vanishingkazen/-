@@ -798,7 +798,7 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
             <div className="bg-white/[0.48] border border-black/10 rounded-lg p-3">
               <div className="grid grid-cols-2 gap-y-2 text-xs">
                 <div className="text-black/65">Toggle Visibility</div>
-                <div className="text-black/80 font-mono">/</div>
+                <div className="text-black/80 font-mono">{COMMAND_KEY}+B</div>
                 
                 <div className="text-black/65">Mouse Shake</div>
                 <div className="text-black/80">快速左右晃动 4 次</div>

@@ -17,7 +17,16 @@ export default defineConfig({
             sourcemap: true,
             minify: false,
             rollupOptions: {
-              external: ["electron", "uiohook-napi"]
+              external: [
+                "electron",
+                "uiohook-napi",
+                // Keep electron-log outside the Vite bundle. logger.ts uses a
+                // runtime require while autoUpdater.ts imports the package;
+                // bundling only one side makes Electron load two logger
+                // instances and register __ELECTRON_LOG__ twice.
+                "electron-log",
+                "electron-log/main"
+              ]
             }
           }
         }

@@ -7,7 +7,6 @@ import { ScreenshotHelper } from "./ScreenshotHelper"
 import { ShortcutsHelper } from "./shortcuts"
 import { initAutoUpdater } from "./autoUpdater"
 import { configHelper } from "./ConfigHelper"
-import { historyHelper } from "./HistoryHelper"
 import { ensureInterviewContextFile } from "./InterviewContextHelper"
 import { VoiceRecognitionHelper } from "./VoiceRecognitionHelper"
 import { MouseShakeDetector } from "./MouseShakeDetector"
@@ -664,7 +663,6 @@ async function initializeApp() {
     
     mainLog.info("初始化功能模块")
     initializeHelpers()
-    historyHelper.initialize()
     initializeIpcHandlers({
       getMainWindow,
       setWindowDimensions,

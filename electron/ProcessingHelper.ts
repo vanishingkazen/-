@@ -6,7 +6,6 @@ import * as axios from "axios"
 import { BrowserWindow } from "electron"
 import { OpenAI } from "openai"
 import { configHelper } from "./ConfigHelper"
-import { historyHelper } from "./HistoryHelper"
 import { loadInterviewAsrEnhancement, loadInterviewContextPrompt } from "./InterviewContextHelper"
 import type { VoiceConversationTranscript } from "./VoiceRecognitionHelper"
 import Anthropic from '@anthropic-ai/sdk';
@@ -422,13 +421,6 @@ export class ProcessingHelper {
         }
 
         this.deps.setProblemInfo(problemInfo)
-        historyHelper.saveSolution(
-          problemInfo,
-          solution,
-          detectedLanguage,
-          existingScreenshots
-        )
-
         mainWindow.webContents.send("processing-status", {
           message: "视觉模型解题完成",
           progress: 100
@@ -541,7 +533,6 @@ export class ProcessingHelper {
         )
 
         if (result.success) {
-          historyHelper.attachDebug(this.deps.getProblemInfo(), result.data)
           this.deps.setHasDebugged(true)
           mainWindow.webContents.send(
             this.deps.PROCESSING_EVENTS.DEBUG_SUCCESS,

@@ -843,7 +843,7 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
               <span><kbd>{COMMAND_KEY} H</kbd> 截图</span>
               <span><kbd>{COMMAND_KEY} Enter</kbd> 执行当前阶段</span>
               <span><kbd>{COMMAND_KEY} R</kbd> 重置</span>
-              <span><kbd>/</kbd> 或快速晃动鼠标 4 次</span>
+              <span><kbd>{COMMAND_KEY} B</kbd> 或快速晃动鼠标 4 次</span>
               <span><kbd>{COMMAND_KEY} N</kbd> 新建会话</span>
               <span><kbd>{COMMAND_KEY} L</kbd> 删除末张截图</span>
             </div>

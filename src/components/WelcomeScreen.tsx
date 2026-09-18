@@ -26,7 +26,7 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onOpenSettings }) 
             <ul className="space-y-2">
               <li className="flex justify-between text-sm">
                 <span className="text-black/65">Toggle Visibility</span>
-                <span className="text-black/80">/</span>
+                <span className="text-black/80 font-mono">{COMMAND_KEY}+B</span>
               </li>
               <li className="flex justify-between text-sm">
                 <span className="text-black/65">Mouse Shake</span>

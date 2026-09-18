@@ -13,6 +13,7 @@ const NATIVE_KEY_CODES: Record<string, number> = {
   "[": 33,
   "]": 30,
   Enter: 36,
+  B: 11,
   H: 4,
   K: 40,
   L: 37,
@@ -297,8 +298,8 @@ export class ShortcutsHelper {
       mainWindow.webContents.send("new-chat-session")
     })
 
-    this.registerShortcut("/", () => {
-      console.log("/ pressed. Toggling window visibility.")
+    this.registerShortcut("CommandOrControl+B", () => {
+      console.log("Command/Ctrl + B pressed. Toggling window visibility.")
       this.deps.toggleMainWindow()
     })
 

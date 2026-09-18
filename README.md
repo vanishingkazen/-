@@ -173,7 +173,7 @@ API 配置默认保存在：
 
 | 快捷键 | 功能 |
 |---|---|
-| `/` | 显示或隐藏窗口 |
+| `Cmd+B` | 显示或隐藏窗口 |
 | 快速左右晃动鼠标 4 次 | 显示或隐藏窗口 |
 | `Cmd+N` | 新建会话，仅 macOS |
 | `Cmd+H` | 截图 |
@@ -194,10 +194,17 @@ API 配置默认保存在：
 
 在 macOS 上，应用会优先尝试加载原生 `CGEventTap`：
 
-- 当前焦点应用是受支持的浏览器时，暂存 Command 按下事件
-- 命中应用快捷键时消费完整的 Command 组合
-- 未命中应用快捷键时，可将 Command 事件转发给浏览器
-- 只有单独按下 Command 时，可以在浏览器捕获前隐藏按下和释放事件
+### 快捷键隐私边界
+
+这是隐私软件的强制约束，不是可选的体验优化：
+
+- 当前焦点应用是受支持的浏览器时，必须在浏览器收到事件前暂存 `Command down`。
+- 命中应用快捷键时，必须消费完整的按键链路，包括 `Command down`、快捷键主键 `keyDown`、快捷键主键 `keyUp` 和 `Command up`。
+- 浏览器不得通过 `flagsChanged`、`keyDown` 或 `keyUp` 观察到应用已注册快捷键的完整组合。
+- 只有确认未命中任何应用快捷键后，才允许把缓存的 `Command down` 转发给浏览器，以便浏览器继续执行非应用快捷键，例如 `Cmd+C` 或 `Cmd+V`。
+- 如果只按下并释放 `Command`，则按下和释放事件都应在浏览器捕获前隐藏。
+
+上述规则用于防止浏览器菜单、网页脚本或浏览器扩展抢先处理应用快捷键。任何对原生事件拦截逻辑的修改都必须保持这一隐私不变量。
 
 受支持的浏览器包括 Chrome、Safari、Edge、Brave、Arc、Opera、Vivaldi 和 Firefox。
 
@@ -276,20 +283,6 @@ Linux:   ~/.local/state/steamgamecode/logs/startup.log
 ~/Library/Application Support/steamgamecode/interview-context.md
 ```
 
-历史记录：
-
-```text
-~/Library/Application Support/steamgamecode/history/history.json
-```
-
-历史截图：
-
-```text
-~/Library/Application Support/steamgamecode/history/screenshots
-```
-
-历史截图默认保留 3 天，文字题目和解答会持续保留，直到手动删除。
-
 聊天会话和附件：
 
 ```text
@@ -299,6 +292,7 @@ Linux:   ~/.local/state/steamgamecode/logs/startup.log
 
 - 删除聊天会话会同时删除本地附件；应用启动时也会清理已经不在会话列表中的遗留附件目录。
 - 使用 DeepSeek 官方接口时，聊天图片会先上传到 Files API 并复用 `file_id`；删除会话或会话超出保留上限（最近 50 个）后会回收远端文件，本地会话仍可继续使用并按需重新上传。
+- 旧版 `history/` 题解目录不再由当前版本创建或写入；如果本机已有旧数据，不会自动删除。
 
 崩溃恢复日志：
 
@@ -323,7 +317,6 @@ electron/
   ProcessingHelper.ts             模型调用、截图解题、追问和语音校正
   InterviewContextHelper.ts       面试上下文文件创建和读取
   ConfigHelper.ts                 配置读写和迁移
-  HistoryHelper.ts                历史记录
   CrashRecovery.ts                 崩溃恢复和自动重启
   logger.ts                       日志初始化、启动索引和前端日志落盘
 
