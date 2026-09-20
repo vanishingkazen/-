@@ -1,6 +1,18 @@
 console.log("Preload script starting...")
-import { contextBridge, ipcRenderer } from "electron"
-const { shell } = require("electron")
+import { contextBridge, ipcRenderer, shell, type IpcRendererEvent } from "electron"
+
+type ScreenshotTakenPayload = { path: string; preview: string }
+type LanguageDetectedPayload = { language: string }
+type ChatStartedPayload = {
+  sessionId: string
+  requestId: string
+  userMessage: unknown
+  acceptedImagePaths?: string[]
+}
+type ChatStreamPayload = { requestId: string; sessionId: string; content: string; done: boolean }
+type ChatContextCompressedPayload = { sessionId: string; summary: string }
+type ChatSuccessPayload = { requestId: string; sessionId: string; content: string; session: unknown }
+type ChatErrorPayload = { requestId: string; sessionId: string; error: string }
 
 const PROCESSING_EVENTS = {
   API_KEY_INVALID: "api-key-invalid"
@@ -38,10 +50,8 @@ const electronAPI = {
     }
   },
   // Event listeners
-  onScreenshotTaken: (
-    callback: (data: { path: string; preview: string }) => void
-  ) => {
-    const subscription = (_: any, data: { path: string; preview: string }) =>
+  onScreenshotTaken: (callback: (data: ScreenshotTakenPayload) => void) => {
+    const subscription = (_event: IpcRendererEvent, data: ScreenshotTakenPayload) =>
       callback(data)
     ipcRenderer.on("screenshot-taken", subscription)
     return () => {
@@ -87,48 +97,33 @@ const electronAPI = {
 
 
 
-  onLanguageDetected: (callback: (data: { language: string }) => void) => {
-    const subscription = (_: any, data: { language: string }) => callback(data)
+  onLanguageDetected: (callback: (data: LanguageDetectedPayload) => void) => {
+    const subscription = (_event: IpcRendererEvent, data: LanguageDetectedPayload) => callback(data)
     ipcRenderer.on("language-detected", subscription)
     return () => ipcRenderer.removeListener("language-detected", subscription)
   },
-  onChatStarted: (
-    callback: (data: {
-      sessionId: string
-      requestId: string
-      userMessage: any
-      acceptedImagePaths?: string[]
-    }) => void
-  ) => {
-    const subscription = (_: any, data: any) => callback(data)
+  onChatStarted: (callback: (data: ChatStartedPayload) => void) => {
+    const subscription = (_event: IpcRendererEvent, data: ChatStartedPayload) => callback(data)
     ipcRenderer.on("chat-started", subscription)
     return () => ipcRenderer.removeListener("chat-started", subscription)
   },
-  onChatStream: (
-    callback: (data: { requestId: string; sessionId: string; content: string; done: boolean }) => void
-  ) => {
-    const subscription = (_: any, data: any) => callback(data)
+  onChatStream: (callback: (data: ChatStreamPayload) => void) => {
+    const subscription = (_event: IpcRendererEvent, data: ChatStreamPayload) => callback(data)
     ipcRenderer.on("chat-stream", subscription)
     return () => ipcRenderer.removeListener("chat-stream", subscription)
   },
-  onChatContextCompressed: (
-    callback: (data: { sessionId: string; summary: string }) => void
-  ) => {
-    const subscription = (_: any, data: any) => callback(data)
+  onChatContextCompressed: (callback: (data: ChatContextCompressedPayload) => void) => {
+    const subscription = (_event: IpcRendererEvent, data: ChatContextCompressedPayload) => callback(data)
     ipcRenderer.on("chat-context-compressed", subscription)
     return () => ipcRenderer.removeListener("chat-context-compressed", subscription)
   },
-  onChatSuccess: (
-    callback: (data: { requestId: string; sessionId: string; content: string; session: unknown }) => void
-  ) => {
-    const subscription = (_: any, data: any) => callback(data)
+  onChatSuccess: (callback: (data: ChatSuccessPayload) => void) => {
+    const subscription = (_event: IpcRendererEvent, data: ChatSuccessPayload) => callback(data)
     ipcRenderer.on("chat-success", subscription)
     return () => ipcRenderer.removeListener("chat-success", subscription)
   },
-  onChatError: (
-    callback: (data: { requestId: string; sessionId: string; error: string }) => void
-  ) => {
-    const subscription = (_: any, data: any) => callback(data)
+  onChatError: (callback: (data: ChatErrorPayload) => void) => {
+    const subscription = (_event: IpcRendererEvent, data: ChatErrorPayload) => callback(data)
     ipcRenderer.on("chat-error", subscription)
     return () => ipcRenderer.removeListener("chat-error", subscription)
   },
@@ -222,15 +217,15 @@ const electronAPI = {
 
   startUpdate: () => ipcRenderer.invoke("start-update"),
   installUpdate: () => ipcRenderer.invoke("install-update"),
-  onUpdateAvailable: (callback: (info: any) => void) => {
-    const subscription = (_: any, info: any) => callback(info)
+  onUpdateAvailable: (callback: (info: unknown) => void) => {
+    const subscription = (_event: IpcRendererEvent, info: unknown) => callback(info)
     ipcRenderer.on("update-available", subscription)
     return () => {
       ipcRenderer.removeListener("update-available", subscription)
     }
   },
-  onUpdateDownloaded: (callback: (info: any) => void) => {
-    const subscription = (_: any, info: any) => callback(info)
+  onUpdateDownloaded: (callback: (info: unknown) => void) => {
+    const subscription = (_event: IpcRendererEvent, info: unknown) => callback(info)
     ipcRenderer.on("update-downloaded", subscription)
     return () => {
       ipcRenderer.removeListener("update-downloaded", subscription)
@@ -245,7 +240,7 @@ const electronAPI = {
   updateConfig: (config: {
     questionMode?: "coding" | "iq";
     apiKey?: string;
-    apiProvider?: "openai" | "openai-compatible" | "gemini" | "anthropic";
+    apiProvider?: "openai-compatible" | "anthropic";
     baseURL?: string;
     extractionModel?: string;
     solutionModel?: string;

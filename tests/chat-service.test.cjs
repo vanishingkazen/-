@@ -653,34 +653,6 @@ test("上游失败会返回结构化错误，恢复后仍可继续同一会话",
   ])
 })
 
-test("Gemini 多图片请求会生成 inlineData parts", async () => {
-  const { service } = setup({
-    apiProvider: "gemini",
-    apiKey: "gemini-test-key",
-    extractionModel: "gemini-2.0-flash",
-    solutionModel: "gemini-2.0-flash"
-  })
-  const session = service.createSession()
-  const images = [
-    { path: pngFile("gemini-image-1.png") },
-    { path: pngFile("gemini-image-2.png") }
-  ]
-
-  const result = await service.sendMessage(session.id, "分析两张图片", images, "request-gemini-images")
-
-  assert.equal(result.success, true)
-  assert.equal(axiosCalls.length, 1)
-  const parts = axiosCalls[0].body.contents[0].parts
-  assert.equal(parts[0].text.includes("多轮对话助手"), true)
-  assert.equal(parts[1].text, "用户：分析两张图片")
-  assert.equal(parts.filter((part) => part.inlineData).length, 2)
-  parts.filter((part) => part.inlineData).forEach((part) => {
-    assert.equal(part.inlineData.mimeType, "image/png")
-    assert.equal(typeof part.inlineData.data, "string")
-    assert.equal(part.inlineData.data.length > 0, true)
-  })
-})
-
 test("Anthropic 长会话压缩后首条消息保持 user 角色", async () => {
   const { service } = setup({
     apiProvider: "anthropic",

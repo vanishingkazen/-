@@ -1,5 +1,5 @@
 import { globalShortcut, app } from "electron"
-import { IShortcutsHelperDeps } from "./main"
+import type { IShortcutsHelperDeps } from "./contracts"
 import { configHelper } from "./ConfigHelper"
 import {
   getMacCommandInterceptor,

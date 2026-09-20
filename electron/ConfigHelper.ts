@@ -6,7 +6,7 @@ import { EventEmitter } from "events"
 import { OpenAI } from "openai"
 import { DEFAULT_INTERVIEW_CONTEXT_PATH } from "./InterviewContextHelper"
 
-export type APIProvider = "openai" | "openai-compatible" | "gemini" | "anthropic";
+export type APIProvider = "openai-compatible" | "anthropic";
 export type QuestionMode = "coding" | "iq";
 
 export interface Config {
@@ -39,13 +39,13 @@ export class ConfigHelper extends EventEmitter {
   private defaultConfig: Config = {
     questionMode: "coding",
     apiKey: "",
-    apiProvider: "gemini", // Default to Gemini
+    apiProvider: "openai-compatible",
     baseURL: "",
-    extractionModel: "gemini-2.0-flash", // Default to Flash for faster responses
+    extractionModel: "gpt-4o",
     solutionApiKey: "",
     solutionBaseURL: "",
-    solutionModel: "gemini-2.0-flash",
-    debuggingModel: "gemini-2.0-flash",
+    solutionModel: "gpt-4o",
+    debuggingModel: "gpt-4o",
     streamingEnabled: true,
     maxOutputTokens: 32768,
     contextMessageLimit: 30,
@@ -140,24 +140,7 @@ export class ConfigHelper extends EventEmitter {
     if (provider === "openai-compatible") {
       return model.trim() || "gpt-4o";
     }
-
-    if (provider === "openai") {
-      // Only allow gpt-4o and gpt-4o-mini for OpenAI
-      const allowedModels = ['gpt-4o', 'gpt-4o-mini'];
-      if (!allowedModels.includes(model)) {
-        console.warn(`Invalid OpenAI model specified: ${model}. Using default model: gpt-4o`);
-        return 'gpt-4o';
-      }
-      return model;
-    } else if (provider === "gemini")  {
-      // Only allow gemini-1.5-pro and gemini-2.0-flash for Gemini
-      const allowedModels = ['gemini-1.5-pro', 'gemini-2.0-flash'];
-      if (!allowedModels.includes(model)) {
-        console.warn(`Invalid Gemini model specified: ${model}. Using default model: gemini-2.0-flash`);
-        return 'gemini-2.0-flash'; // Changed default to flash
-      }
-      return model;
-    }  else if (provider === "anthropic") {
+    if (provider === "anthropic") {
       // Only allow Claude models
       const allowedModels = ['claude-3-7-sonnet-20250219', 'claude-3-5-sonnet-20241022', 'claude-3-opus-20240229'];
       if (!allowedModels.includes(model)) {
@@ -166,7 +149,6 @@ export class ConfigHelper extends EventEmitter {
       }
       return model;
     }
-    // Default fallback
     return model;
   }
 
@@ -176,9 +158,20 @@ export class ConfigHelper extends EventEmitter {
         const configData = fs.readFileSync(this.configPath, 'utf8');
         const config = JSON.parse(configData);
         
-        // Ensure apiProvider is a valid value
-        if (config.apiProvider !== "openai" && config.apiProvider !== "openai-compatible" && config.apiProvider !== "gemini"  && config.apiProvider !== "anthropic") {
-          config.apiProvider = "gemini"; // Default to Gemini if invalid
+        // Normalize legacy providers. Native OpenAI is folded into the
+        // OpenAI-compatible protocol; Gemini is no longer supported.
+        if (config.apiProvider === "openai") {
+          config.apiProvider = "openai-compatible";
+          if (!config.baseURL) {
+            config.baseURL = "https://api.openai.com/v1";
+          }
+        } else if (config.apiProvider !== "openai-compatible" && config.apiProvider !== "anthropic") {
+          config.apiProvider = "openai-compatible";
+          config.apiKey = "";
+          config.baseURL = "";
+          config.extractionModel = "gpt-4o";
+          config.solutionModel = "gpt-4o";
+          config.debuggingModel = "gpt-4o";
         }
         if (config.questionMode !== "coding" && config.questionMode !== "iq") {
           config.questionMode = "coding";
@@ -259,29 +252,16 @@ export class ConfigHelper extends EventEmitter {
       
       // Auto-detect provider based on API key format if a new key is provided
       if (updates.apiKey && !updates.apiProvider) {
-        // If API key starts with "sk-", it's likely an OpenAI key
-        if (updates.apiKey.trim().startsWith('sk-')) {
-          provider = "openai";
-          console.log("Auto-detected OpenAI API key format");
-        } else if (updates.apiKey.trim().startsWith('sk-ant-')) {
-          provider = "anthropic";
-          console.log("Auto-detected Anthropic API key format");
-        } else {
-          provider = "gemini";
-          console.log("Using Gemini API key format (default)");
-        }
-        
-        // Update the provider in the updates object
+        provider = updates.apiKey.trim().startsWith('sk-ant-')
+          ? "anthropic"
+          : "openai-compatible";
+        console.log(`Auto-detected API provider: ${provider}`);
         updates.apiProvider = provider;
       }
-      
+
       // If provider is changing, reset models to the default for that provider
       if (updates.apiProvider && updates.apiProvider !== currentConfig.apiProvider) {
-        if (updates.apiProvider === "openai") {
-          updates.extractionModel ||= "gpt-4o";
-          updates.solutionModel ||= "gpt-4o";
-          updates.debuggingModel ||= "gpt-4o";
-        } else if (updates.apiProvider === "openai-compatible") {
+        if (updates.apiProvider === "openai-compatible") {
           updates.extractionModel ||= "gpt-4o";
           updates.solutionModel ||= "gpt-4o";
           updates.debuggingModel ||= "gpt-4o";
@@ -289,13 +269,9 @@ export class ConfigHelper extends EventEmitter {
           updates.extractionModel ||= "claude-3-7-sonnet-20250219";
           updates.solutionModel ||= "claude-3-7-sonnet-20250219";
           updates.debuggingModel ||= "claude-3-7-sonnet-20250219";
-        } else {
-          updates.extractionModel ||= "gemini-2.0-flash";
-          updates.solutionModel ||= "gemini-2.0-flash";
-          updates.debuggingModel ||= "gemini-2.0-flash";
         }
       }
-      
+
       // Sanitize model selections in the updates
       if (updates.extractionModel) {
         updates.extractionModel = this.sanitizeModelSelection(updates.extractionModel, provider);
@@ -368,30 +344,18 @@ export class ConfigHelper extends EventEmitter {
   public isValidApiKeyFormat(apiKey: string, provider?: APIProvider): boolean {
     // If provider is not specified, attempt to auto-detect
     if (!provider) {
-      if (apiKey.trim().startsWith('sk-')) {
-        if (apiKey.trim().startsWith('sk-ant-')) {
-          provider = "anthropic";
-        } else {
-          provider = "openai";
-        }
-      } else {
-        provider = "gemini";
-      }
+      provider = apiKey.trim().startsWith('sk-ant-')
+        ? "anthropic"
+        : "openai-compatible";
     }
-    
+
     if (provider === "openai-compatible") {
       return apiKey.trim().length > 0;
-    } else if (provider === "openai") {
-      // Basic format validation for OpenAI API keys
-      return /^sk-[a-zA-Z0-9]{32,}$/.test(apiKey.trim());
-    } else if (provider === "gemini") {
-      // Basic format validation for Gemini API keys (usually alphanumeric with no specific prefix)
-      return apiKey.trim().length >= 10; // Assuming Gemini keys are at least 10 chars
     } else if (provider === "anthropic") {
       // Basic format validation for Anthropic API keys
       return /^sk-ant-[a-zA-Z0-9]{32,}$/.test(apiKey.trim());
     }
-    
+
     return false;
   }
   
@@ -433,30 +397,18 @@ export class ConfigHelper extends EventEmitter {
   public async testApiKey(apiKey: string, provider?: APIProvider, baseURL?: string): Promise<{valid: boolean, error?: string}> {
     // Auto-detect provider based on key format if not specified
     if (!provider) {
-      if (apiKey.trim().startsWith('sk-')) {
-        if (apiKey.trim().startsWith('sk-ant-')) {
-          provider = "anthropic";
-          console.log("Auto-detected Anthropic API key format for testing");
-        } else {
-          provider = "openai";
-          console.log("Auto-detected OpenAI API key format for testing");
-        }
-      } else {
-        provider = "gemini";
-        console.log("Using Gemini API key format for testing (default)");
-      }
+      provider = apiKey.trim().startsWith('sk-ant-')
+        ? "anthropic"
+        : "openai-compatible";
+      console.log(`Auto-detected API provider for testing: ${provider}`);
     }
-    
+
     if (provider === "openai-compatible") {
       return this.testOpenAIKey(apiKey, baseURL);
-    } else if (provider === "openai") {
-      return this.testOpenAIKey(apiKey);
-    } else if (provider === "gemini") {
-      return this.testGeminiKey(apiKey);
     } else if (provider === "anthropic") {
       return this.testAnthropicKey(apiKey);
     }
-    
+
     return { valid: false, error: "Unknown API provider" };
   }
   
@@ -469,50 +421,30 @@ export class ConfigHelper extends EventEmitter {
       // Make a simple API call to test the key
       await openai.models.list();
       return { valid: true };
-    } catch (error: any) {
-      console.error('OpenAI API key test failed:', error);
+    } catch (error: unknown) {
+      console.error('OpenAI-compatible API key test failed:', error);
       
+      const status = typeof error === "object" && error !== null && "status" in error
+        ? Number((error as { status?: unknown }).status)
+        : undefined;
+      const message = error instanceof Error ? error.message : "";
+
       // Determine the specific error type for better error messages
-      let errorMessage = 'Unknown error validating OpenAI API key';
-      
-      if (error.status === 401) {
-        errorMessage = 'Invalid API key. Please check your OpenAI key and try again.';
-      } else if (error.status === 429) {
-        errorMessage = 'Rate limit exceeded. Your OpenAI API key has reached its request limit or has insufficient quota.';
-      } else if (error.status === 500) {
-        errorMessage = 'OpenAI server error. Please try again later.';
-      } else if (error.message) {
-        errorMessage = `Error: ${error.message}`;
+      let errorMessage = 'Unknown error validating OpenAI-compatible API key';
+
+      if (status === 401) {
+        errorMessage = 'Invalid API key. Please check your OpenAI-compatible endpoint key and try again.';
+      } else if (status === 429) {
+        errorMessage = 'Rate limit exceeded. Your OpenAI-compatible endpoint key has reached its request limit or has insufficient quota.';
+      } else if (status === 500) {
+        errorMessage = 'OpenAI-compatible endpoint server error. Please try again later.';
+      } else if (message) {
+        errorMessage = `Error: ${message}`;
       }
-      
       return { valid: false, error: errorMessage };
     }
   }
   
-  /**
-   * Test Gemini API key
-   * Note: This is a simplified implementation since we don't have the actual Gemini client
-   */
-  private async testGeminiKey(apiKey: string): Promise<{valid: boolean, error?: string}> {
-    try {
-      // For now, we'll just do a basic check to ensure the key exists and has valid format
-      // In production, you would connect to the Gemini API and validate the key
-      if (apiKey && apiKey.trim().length >= 20) {
-        // Here you would actually validate the key with a Gemini API call
-        return { valid: true };
-      }
-      return { valid: false, error: 'Invalid Gemini API key format.' };
-    } catch (error: any) {
-      console.error('Gemini API key test failed:', error);
-      let errorMessage = 'Unknown error validating Gemini API key';
-      
-      if (error.message) {
-        errorMessage = `Error: ${error.message}`;
-      }
-      
-      return { valid: false, error: errorMessage };
-    }
-  }
 
   /**
    * Test Anthropic API key
@@ -527,14 +459,13 @@ export class ConfigHelper extends EventEmitter {
         return { valid: true };
       }
       return { valid: false, error: 'Invalid Anthropic API key format.' };
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Anthropic API key test failed:', error);
+      const message = error instanceof Error ? error.message : "";
       let errorMessage = 'Unknown error validating Anthropic API key';
-      
-      if (error.message) {
-        errorMessage = `Error: ${error.message}`;
+      if (message) {
+        errorMessage = `Error: ${message}`;
       }
-      
       return { valid: false, error: errorMessage };
     }
   }

@@ -124,7 +124,7 @@ export interface ElectronAPI {
   getConfig: () => Promise<{
     questionMode: "coding" | "iq"
     apiKey: string
-    apiProvider: "openai" | "openai-compatible" | "gemini" | "anthropic"
+    apiProvider: "openai-compatible" | "anthropic"
     baseURL: string
     extractionModel: string
     solutionApiKey: string
@@ -147,7 +147,7 @@ export interface ElectronAPI {
   updateConfig: (config: {
     questionMode?: "coding" | "iq"
     apiKey?: string
-    apiProvider?: "openai" | "openai-compatible" | "gemini" | "anthropic"
+    apiProvider?: "openai-compatible" | "anthropic"
     baseURL?: string
     extractionModel?: string
     solutionApiKey?: string

@@ -122,7 +122,7 @@ export const getInterviewContextStatus = (
     return {
       enabled,
       available: false,
-      path: filePath,
+      path: filePath || DEFAULT_INTERVIEW_CONTEXT_PATH,
       characterCount: 0,
       error: error instanceof Error ? error.message : "无法读取面试上下文文件"
     }

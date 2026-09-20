@@ -6,7 +6,7 @@ steamgamecode 是一个面向技术面试和题目解答场景的 macOS 桌面�
 
 - 单阶段视觉解题：截图直接发送给视觉模型，不再执行“题目提取 -> 解答”双阶段调用
 - 自动识别编程题、选择题、IQ 题等不同题型
-- 支持 OpenAI、OpenAI Compatible、Gemini、Anthropic
+- 支持 OpenAI Compatible、Anthropic
 - 支持文字追问、代码讨论和历史记录
 - 支持双声道实时语音上下文采集，并在确认后显式发送给 AI 生成面试回答
 - 支持面试上下文文件，自动补充个人项目与技术术语
@@ -313,7 +313,17 @@ electron/
   shortcuts.ts                    全局快捷键注册
   MacCommandInterceptor.ts        macOS 原生 Command 拦截封装
   MouseShakeDetector.ts           鼠标晃动检测
-  ProcessingHelper.ts             模型调用、截图解题、追问和语音校正
+  ProcessingHelper.ts             处理流程协调、截图队列和请求取消
+  ProcessingAIClientManager.ts    AI client 初始化、配置变更和释放
+  ProcessingVisionService.ts      截图视觉解题
+  ProcessingDebugService.ts       调试截图处理
+  ProcessingFollowupService.ts      文字追问和流式响应
+  ProcessingVoiceCorrectionService.ts 语音转写术语校正
+  ChatService.ts                  聊天编排、上下文和事件发送
+  ChatStore.ts                    会话、附件和持久化
+  ChatProvider.ts                 OpenAI Compatible / Anthropic 请求
+  ChatTypes.ts                    聊天类型定义
+  contracts.ts                    跨模块契约和处理事件常量
   InterviewContextHelper.ts       面试上下文文件创建和读取
   ConfigHelper.ts                 配置读写和迁移
   CrashRecovery.ts                 崩溃恢复和自动重启
@@ -330,6 +340,22 @@ src/
   lib/logger.ts                   前端日志转发和错误捕获
   index.css                       全局样式和主题
 ```
+
+## 重构与发布验证
+
+当前代码已完成基础解耦、大型业务拆分和稳定性加固，正在进行发布收尾。完整的阶段状态、架构边界、性能基线和发布前检查清单见 [`docs/REFACTORING-STATUS.md`](docs/REFACTORING-STATUS.md)。
+
+发布前执行：
+
+```bash
+npm test
+npm run lint
+npx tsc -p tsconfig.electron.json --noEmit
+npx tsc -p tsconfig.json --noEmit
+npm run build
+```
+
+本次重构不改变 macOS Command 事件拦截的隐私不变量；原生拦截算法和其 Electron 封装仍需按原有边界维护。
 
 ## 常见问题
 

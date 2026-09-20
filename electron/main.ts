@@ -3,6 +3,7 @@ import path from "path"
 import fs from "fs"
 import { initializeIpcHandlers } from "./ipcHandlers"
 import { ProcessingHelper } from "./ProcessingHelper"
+import { PROCESSING_EVENTS, type AppView, type IProcessingHelperDeps, type IShortcutsHelperDeps, type ProblemInfo } from "./contracts"
 import { ScreenshotHelper } from "./ScreenshotHelper"
 import { ShortcutsHelper } from "./shortcuts"
 import { initAutoUpdater } from "./autoUpdater"
@@ -67,6 +68,7 @@ app.on("browser-window-created", (_event, window) => {
   window.on("show", () => window.setContentProtection(true))
 })
 // Application State
+
 const state = {
   // Window management properties
   mainWindow: null as BrowserWindow | null,
@@ -88,91 +90,12 @@ const state = {
   chatService: null as ChatService | null,
 
   // View and state management
-  view: "queue" as "queue" | "solutions" | "debug",
-  problemInfo: null as any,
+  view: "queue" as AppView,
+  problemInfo: null as ProblemInfo | null,
   hasDebugged: false,
 
   // Processing events
-  PROCESSING_EVENTS: {
-    UNAUTHORIZED: "processing-unauthorized",
-    NO_SCREENSHOTS: "processing-no-screenshots",
-    OUT_OF_CREDITS: "out-of-credits",
-    API_KEY_INVALID: "api-key-invalid",
-    INITIAL_START: "initial-start",
-    PROBLEM_EXTRACTED: "problem-extracted",
-    SOLUTION_SUCCESS: "solution-success",
-    INITIAL_SOLUTION_ERROR: "solution-error",
-    DEBUG_START: "debug-start",
-    DEBUG_SUCCESS: "debug-success",
-    DEBUG_ERROR: "debug-error"
-  } as const
-}
-
-// Add interfaces for helper classes
-export interface IProcessingHelperDeps {
-  getScreenshotHelper: () => ScreenshotHelper | null
-  getMainWindow: () => BrowserWindow | null
-  getView: () => "queue" | "solutions" | "debug"
-  setView: (view: "queue" | "solutions" | "debug") => void
-  getProblemInfo: () => any
-  setProblemInfo: (info: any) => void
-  getScreenshotQueue: () => string[]
-  getExtraScreenshotQueue: () => string[]
-  clearQueues: () => void
-  takeScreenshot: () => Promise<string>
-  getImagePreview: (filepath: string) => Promise<string>
-  deleteScreenshot: (
-    path: string
-  ) => Promise<{ success: boolean; error?: string }>
-  setHasDebugged: (value: boolean) => void
-  getHasDebugged: () => boolean
-  PROCESSING_EVENTS: typeof state.PROCESSING_EVENTS
-}
-
-export interface IShortcutsHelperDeps {
-  getMainWindow: () => BrowserWindow | null
-  takeScreenshot: () => Promise<string>
-  getImagePreview: (filepath: string) => Promise<string>
-  processingHelper: ProcessingHelper | null
-  chatService: ChatService | null
-  voiceRecognitionHelper: VoiceRecognitionHelper | null
-  getScreenshotQueue: () => string[]
-  getExtraScreenshotQueue: () => string[]
-  getView: () => "queue" | "solutions" | "debug"
-  clearQueues: () => void
-  setView: (view: "queue" | "solutions" | "debug") => void
-  isVisible: () => boolean
-  toggleMainWindow: () => void
-  moveWindowLeft: () => void
-  moveWindowRight: () => void
-  moveWindowUp: () => void
-  moveWindowDown: () => void
-  resetWindowPosition: () => void
-}
-
-export interface IIpcHandlerDeps {
-  getMainWindow: () => BrowserWindow | null
-  setWindowDimensions: (width: number, height: number) => void
-  getScreenshotQueue: () => string[]
-  getExtraScreenshotQueue: () => string[]
-  deleteScreenshot: (
-    path: string
-  ) => Promise<{ success: boolean; error?: string }>
-  getImagePreview: (filepath: string) => Promise<string>
-  processingHelper: ProcessingHelper | null
-  chatService: ChatService | null
-  voiceRecognitionHelper: VoiceRecognitionHelper | null
-  PROCESSING_EVENTS: typeof state.PROCESSING_EVENTS
-  takeScreenshot: () => Promise<string>
-  getView: () => "queue" | "solutions" | "debug"
-  toggleMainWindow: () => void
-  clearQueues: () => void
-  setView: (view: "queue" | "solutions" | "debug") => void
-  setProblemInfo: (info: any) => void
-  moveWindowLeft: () => void
-  moveWindowRight: () => void
-  moveWindowUp: () => void
-  moveWindowDown: () => void
+  PROCESSING_EVENTS
 }
 
 // Initialize helpers
@@ -342,15 +265,16 @@ async function createWindow(): Promise<void> {
     movable: true
   }
 
-  state.mainWindow = new BrowserWindow(windowSettings)
-  state.mainWindow.setContentProtection(true)
+  const mainWindow = new BrowserWindow(windowSettings)
+  state.mainWindow = mainWindow
+  mainWindow.setContentProtection(true)
   mainLog.info(
-    `主窗口已创建 id=${state.mainWindow.id} size=${windowSettings.width}x${windowSettings.height}`
+    `主窗口已创建 id=${mainWindow.id} size=${windowSettings.width}x${windowSettings.height}`
   )
 
   // Add more detailed logging for window events
   // 前端（渲染进程）控制台输出统一写入日志文件
-  state.mainWindow.webContents.on(
+  mainWindow.webContents.on(
     "console-message",
     (_event, level, message, line, sourceId) => {
       logFromRendererConsole(
@@ -361,14 +285,14 @@ async function createWindow(): Promise<void> {
     }
   )
 
-  state.mainWindow.webContents.on("did-finish-load", () => {
+  mainWindow.webContents.on("did-finish-load", () => {
     console.log("Window finished loading")
-    mainLog.info("渲染进程加载完成", state.mainWindow?.webContents.getURL())
+    mainLog.info("渲染进程加载完成", mainWindow?.webContents.getURL())
     // Chromium persists per-host zoom levels across sessions. Reset zoom on
     // every successful load so the window always matches the rendered content.
-    state.mainWindow?.webContents.setZoomFactor(1)
+    mainWindow?.webContents.setZoomFactor(1)
   })
-  state.mainWindow.webContents.on(
+  mainWindow.webContents.on(
     "did-fail-load",
     async (event, errorCode, errorDescription) => {
       console.error("Window failed to load:", errorCode, errorDescription)
@@ -376,7 +300,7 @@ async function createWindow(): Promise<void> {
         // In development, retry loading after a short delay
         console.log("Retrying to load development server...")
         setTimeout(() => {
-          state.mainWindow?.loadURL("http://localhost:54321").catch((error) => {
+          mainWindow?.loadURL("http://localhost:54321").catch((error) => {
             console.error("Failed to load dev server on retry:", error)
           })
         }, 1000)
@@ -387,13 +311,13 @@ async function createWindow(): Promise<void> {
   if (isDev) {
     // In development, load from the dev server
     console.log("Loading from development server: http://localhost:54321")
-    state.mainWindow.loadURL("http://localhost:54321").catch((error) => {
+    mainWindow.loadURL("http://localhost:54321").catch((error) => {
       console.error("Failed to load dev server, falling back to local file:", error)
       // Fallback to local file if dev server is not available
       const indexPath = path.join(__dirname, "../dist/index.html")
       console.log("Falling back to:", indexPath)
       if (fs.existsSync(indexPath)) {
-        state.mainWindow.loadFile(indexPath)
+        mainWindow.loadFile(indexPath)
       } else {
         console.error("Could not find index.html in dist folder")
       }
@@ -404,27 +328,27 @@ async function createWindow(): Promise<void> {
     console.log("Loading production build:", indexPath)
     
     if (fs.existsSync(indexPath)) {
-      state.mainWindow.loadFile(indexPath)
+      mainWindow.loadFile(indexPath)
     } else {
       console.error("Could not find index.html in dist folder")
     }
   }
 
   // Configure window behavior
-  state.mainWindow.webContents.setZoomFactor(1)
+  mainWindow.webContents.setZoomFactor(1)
   if (isDev && process.env.OPEN_DEVTOOLS === "1") {
-    state.mainWindow.webContents.openDevTools()
+    mainWindow.webContents.openDevTools()
   }
-  configureWebContents(state.mainWindow.webContents)
+  configureWebContents(mainWindow.webContents)
 
   // Enhanced screen capture resistance
 
   if (process.platform !== "win32") {
-    state.mainWindow.setVisibleOnAllWorkspaces(true, {
+    mainWindow.setVisibleOnAllWorkspaces(true, {
       visibleOnFullScreen: true
     })
   }
-  state.mainWindow.setAlwaysOnTop(
+  mainWindow.setAlwaysOnTop(
       true,
       process.platform === "darwin" ? "screen-saver" : "floating",
       1
@@ -433,28 +357,28 @@ async function createWindow(): Promise<void> {
   // Additional screen capture resistance settings
   if (process.platform === "darwin") {
     // Prevent window from being captured in screenshots
-    state.mainWindow.setHiddenInMissionControl(true)
-    state.mainWindow.setWindowButtonVisibility(false)
-    state.mainWindow.setBackgroundColor("#00000000")
+    mainWindow.setHiddenInMissionControl(true)
+    mainWindow.setWindowButtonVisibility(false)
+    mainWindow.setBackgroundColor("#00000000")
 
     // Prevent window from being included in window switcher
-    state.mainWindow.setSkipTaskbar(true)
+    mainWindow.setSkipTaskbar(true)
 
     // Disable window shadow
-    state.mainWindow.setHasShadow(false)
+    mainWindow.setHasShadow(false)
   }
 
   // Prevent the window from being captured by screen recording
-  state.mainWindow.webContents.setBackgroundThrottling(false)
-  state.mainWindow.webContents.setFrameRate(60)
+  mainWindow.webContents.setBackgroundThrottling(false)
+  mainWindow.webContents.setFrameRate(60)
 
   // Set up window listeners
-  state.mainWindow.on("move", handleWindowMove)
-  state.mainWindow.on("resize", handleWindowResize)
-  state.mainWindow.on("closed", handleWindowClosed)
+  mainWindow.on("move", handleWindowMove)
+  mainWindow.on("resize", handleWindowResize)
+  mainWindow.on("closed", handleWindowClosed)
 
   // Initialize window state
-  const bounds = state.mainWindow.getBounds()
+  const bounds = mainWindow.getBounds()
   state.windowPosition = { x: bounds.x, y: bounds.y }
   state.windowSize = { width: bounds.width, height: bounds.height }
   state.currentX = bounds.x
@@ -467,15 +391,15 @@ async function createWindow(): Promise<void> {
   console.log(`Initial opacity from config: ${savedOpacity}`);
   
   // Always make sure window is shown first
-  state.mainWindow.showInactive(); // Use showInactive for consistency
+  mainWindow.showInactive(); // Use showInactive for consistency
   
   if (savedOpacity < 0.1) {
     console.log('Initial opacity below minimum, setting to 0 and hiding window');
-    state.mainWindow.setOpacity(0);
+    mainWindow.setOpacity(0);
     state.isWindowVisible = false;
   } else {
     console.log(`Setting initial opacity to ${savedOpacity}`);
-    state.mainWindow.setOpacity(savedOpacity);
+    mainWindow.setOpacity(savedOpacity);
     state.isWindowVisible = true;
   }
 }
@@ -503,44 +427,44 @@ function handleWindowClosed(): void {
 
 // Window visibility functions
 function hideMainWindow(): void {
-  if (!state.mainWindow?.isDestroyed()) {
-    const bounds = state.mainWindow.getBounds();
+  const mainWindow = state.mainWindow
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const bounds = mainWindow.getBounds();
     state.windowPosition = { x: bounds.x, y: bounds.y };
     state.windowSize = { width: bounds.width, height: bounds.height };
-    state.mainWindow.setIgnoreMouseEvents(true, { forward: true });
-    state.mainWindow.setOpacity(0);
+    mainWindow.setIgnoreMouseEvents(true, { forward: true });
+    mainWindow.setOpacity(0);
     state.isWindowVisible = false;
-    console.log('Window hidden, opacity set to 0');
-  }
+  console.log('Window hidden, opacity set to 0');
 }
 
 function showMainWindow(): void {
-  if (!state.mainWindow?.isDestroyed()) {
-    if (state.windowPosition && state.windowSize) {
-      state.mainWindow.setBounds({
+  const mainWindow = state.mainWindow
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (state.windowPosition && state.windowSize) {
+      mainWindow.setBounds({
         ...state.windowPosition,
         ...state.windowSize
       });
     }
-    state.mainWindow.setIgnoreMouseEvents(false);
-    state.mainWindow.setAlwaysOnTop(
+    mainWindow.setIgnoreMouseEvents(false);
+    mainWindow.setAlwaysOnTop(
       true,
       process.platform === "darwin" ? "screen-saver" : "floating",
       1
     );
     if (process.platform !== "win32") {
-      state.mainWindow.setVisibleOnAllWorkspaces(true, {
+      mainWindow.setVisibleOnAllWorkspaces(true, {
         visibleOnFullScreen: true
       });
     }
-    state.mainWindow.setContentProtection(true);
-    state.mainWindow.setOpacity(0); // Set opacity to 0 before showing
-    state.mainWindow.showInactive(); // Use showInactive instead of show+focus
+    mainWindow.setContentProtection(true);
+    mainWindow.setOpacity(0); // Set opacity to 0 before showing
+    mainWindow.showInactive(); // Use showInactive instead of show+focus
     const savedOpacity = configHelper.getOpacity()
-    state.mainWindow.setOpacity(savedOpacity); // Restore the user-configured opacity
+    mainWindow.setOpacity(savedOpacity); // Restore the user-configured opacity
     state.isWindowVisible = true;
-    console.log(`Window shown with showInactive(), opacity set to ${savedOpacity}`);
-  }
+  console.log(`Window shown with showInactive(), opacity set to ${savedOpacity}`);
 }
 
 function toggleMainWindow(): void {
@@ -563,7 +487,8 @@ function moveWindowHorizontal(updateFn: (x: number) => number): void {
 }
 
 function moveWindowVertical(updateFn: (y: number) => number): void {
-  if (!state.mainWindow) return
+  const mainWindow = state.mainWindow
+  if (!mainWindow || mainWindow.isDestroyed()) return
 
   const newY = updateFn(state.currentY)
   // Allow window to go 2/3 off screen in either direction
@@ -584,7 +509,7 @@ function moveWindowVertical(updateFn: (y: number) => number): void {
   // Only update if within bounds
   if (newY >= maxUpLimit && newY <= maxDownLimit) {
     state.currentY = newY
-    state.mainWindow.setPosition(
+    mainWindow.setPosition(
       Math.round(state.currentX),
       Math.round(state.currentY)
     )
@@ -592,29 +517,29 @@ function moveWindowVertical(updateFn: (y: number) => number): void {
 }
 
 function resetWindowPosition(): void {
-  if (!state.mainWindow?.isDestroyed()) {
-    state.currentX = 0
+  const mainWindow = state.mainWindow
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  state.currentX = 0
     state.currentY = 50
-    state.mainWindow.setPosition(state.currentX, state.currentY)
-    console.log("Window position reset to default: x=0, y=50")
-  }
+    mainWindow.setPosition(state.currentX, state.currentY)
+  console.log("Window position reset to default: x=0, y=50")
 }
 
 // Window dimension functions
 function setWindowDimensions(width: number, height: number): void {
-  if (!state.mainWindow?.isDestroyed()) {
-    const [currentX, currentY] = state.mainWindow.getPosition()
+  const mainWindow = state.mainWindow
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const [currentX, currentY] = mainWindow.getPosition()
     const primaryDisplay = screen.getPrimaryDisplay()
     const workArea = primaryDisplay.workAreaSize
     const maxWidth = Math.floor(workArea.width * 0.5)
 
-    state.mainWindow.setBounds({
+    mainWindow.setBounds({
       x: Math.min(currentX, workArea.width - maxWidth),
       y: currentY,
       width: Math.min(width, maxWidth),
-      height: Math.ceil(height)
-    })
-  }
+    height: Math.ceil(height)
+  })
 }
 
 // Environment setup
@@ -773,11 +698,11 @@ function getMainWindow(): BrowserWindow | null {
   return state.mainWindow
 }
 
-function getView(): "queue" | "solutions" | "debug" {
+function getView(): AppView {
   return state.view
 }
 
-function setView(view: "queue" | "solutions" | "debug"): void {
+function setView(view: AppView): void {
   state.view = view
   state.screenshotHelper?.setView(view)
 }
@@ -786,11 +711,11 @@ function getScreenshotHelper(): ScreenshotHelper | null {
   return state.screenshotHelper
 }
 
-function getProblemInfo(): any {
+function getProblemInfo(): ProblemInfo | null {
   return state.problemInfo
 }
 
-function setProblemInfo(problemInfo: any): void {
+function setProblemInfo(problemInfo: ProblemInfo | null): void {
   state.problemInfo = problemInfo
 }
 

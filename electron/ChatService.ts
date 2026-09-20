@@ -1,10 +1,8 @@
-import { app, BrowserWindow } from "electron"
+import { BrowserWindow } from "electron"
 import fs from "node:fs"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
-import { OpenAI } from "openai"
-import Anthropic from "@anthropic-ai/sdk"
-import * as axios from "axios"
+import type { OpenAI } from "openai"
 import { configHelper } from "./ConfigHelper"
 import { imageDataUrl, readImageMetadata, resizeImageToPng, type ChatImageMimeType } from "./ChatImageUtils"
 import {
@@ -15,42 +13,11 @@ import {
   type DeepSeekFilesConfig
 } from "./DeepSeekFilesApi"
 import { loadInterviewContextPrompt } from "./InterviewContextHelper"
+import { ChatStore, safeStorageComponent } from "./ChatStore"
+import { ChatProvider, type ProviderMessage } from "./ChatProvider"
 
-export interface ChatAttachment {
-  path: string
-  preview?: string
-  transportPath?: string
-  mimeType?: ChatImageMimeType
-  width?: number
-  height?: number
-  fileId?: string
-  fileOwnerHash?: string
-  imageSummary?: string
-}
-
-export interface ChatMessage {
-  id: string
-  role: "user" | "assistant"
-  content: string
-  images: ChatAttachment[]
-  createdAt: string
-  status: "completed" | "streaming" | "error"
-}
-
-export interface ChatSessionSeed {
-  title?: string
-  summary?: string
-  messages?: ChatMessage[]
-}
-
-export interface ChatSession {
-  id: string
-  title: string
-  summary: string
-  messages: ChatMessage[]
-  createdAt: string
-  updatedAt: string
-}
+import type { ChatAttachment, ChatMessage, ChatSession, ChatSessionSeed } from "./ChatTypes"
+export type { ChatAttachment, ChatMessage, ChatSession, ChatSessionSeed } from "./ChatTypes"
 
 export interface ChatServiceDeps {
   getMainWindow: () => BrowserWindow | null
@@ -62,12 +29,9 @@ export interface ChatServiceDeps {
   }) => void
 }
 
-type ProviderMessage = { role: "system" | "user" | "assistant"; content: string }
-
 const SYSTEM_PROMPT = "你是一个多轮对话助手，能够处理文本、代码和截图。保持上下文连续，直接回答用户，所有说明和代码注释使用简体中文。"
 const IMAGE_TOKEN_ESTIMATE = 1024
 const MIN_IMAGE_TEXT_TOKENS = 64
-const MAX_STORED_SESSIONS = 50
 
 const LANGUAGE_ALIASES: Record<string, string> = {
   py: "python",
@@ -159,252 +123,6 @@ function isVoiceInterviewRequest(content: string): boolean {
     content.includes("线上会议双方对话上下文")
 }
 
-function safeStorageComponent(value: string): string {
-  return value.replace(/[^a-z0-9_-]/gi, "_") || "session"
-}
-
-function normalizeAttachment(raw: unknown): ChatAttachment | null {
-  if (!raw || typeof raw !== "object") return null
-  const value = raw as Partial<ChatAttachment>
-  if (typeof value.path !== "string" || !value.path) return null
-  return {
-    path: value.path,
-    ...(typeof value.preview === "string" ? { preview: value.preview } : {}),
-    ...(typeof value.transportPath === "string" ? { transportPath: value.transportPath } : {}),
-    ...(value.mimeType === "image/png" || value.mimeType === "image/jpeg" || value.mimeType === "image/gif" || value.mimeType === "image/webp" ? { mimeType: value.mimeType } : {}),
-    ...(Number.isFinite(value.width) ? { width: value.width } : {}),
-    ...(Number.isFinite(value.height) ? { height: value.height } : {}),
-    ...(typeof value.fileId === "string" && value.fileId ? { fileId: value.fileId } : {}),
-    ...(typeof value.fileOwnerHash === "string" && value.fileOwnerHash ? { fileOwnerHash: value.fileOwnerHash } : {}),
-    ...(typeof value.imageSummary === "string" ? { imageSummary: value.imageSummary } : {})
-  }
-}
-
-function normalizeMessage(raw: unknown): ChatMessage | null {
-  if (!raw || typeof raw !== "object") return null
-  const value = raw as Partial<ChatMessage>
-  if (value.role !== "user" && value.role !== "assistant") return null
-  if (typeof value.content !== "string") return null
-  const images = Array.isArray(value.images)
-    ? value.images.map(normalizeAttachment).filter((image): image is ChatAttachment => Boolean(image))
-    : []
-  return {
-    id: typeof value.id === "string" && value.id ? value.id : randomUUID(),
-    role: value.role,
-    content: value.content,
-    images,
-    createdAt: typeof value.createdAt === "string" ? value.createdAt : new Date().toISOString(),
-    status: value.status === "streaming" || value.status === "error" ? value.status : "completed"
-  }
-}
-
-class ChatStore {
-  private readonly filePath: string
-  private sessions: ChatSession[] = []
-  private currentSessionId = ""
-  /** 会话被保留上限裁掉时的回调（用于回收远端图片文件） */
-  public onSessionsDropped: ((sessions: ChatSession[]) => void) | null = null
-  private readonly droppedSessionIds = new Set<string>()
-
-  constructor() {
-    const directory = path.join(app.getPath("appData"), "steamgamecode")
-    this.filePath = path.join(directory, "chat-sessions.json")
-    this.load()
-  }
-
-  public current(): ChatSession {
-    if (!this.sessions.length) return this.create()
-    const existing = this.get(this.currentSessionId)
-    if (existing) return existing
-    this.currentSessionId = this.sessions[0].id
-    return this.sessions[0]
-  }
-
-  public create(seed: ChatSessionSeed = {}): ChatSession {
-    const safeSeed = seed && typeof seed === "object" ? seed : {}
-    const now = new Date().toISOString()
-    const rawMessages = Array.isArray(safeSeed.messages)
-      ? safeSeed.messages.map(normalizeMessage).filter((message): message is ChatMessage => Boolean(message))
-      : []
-    const session: ChatSession = {
-      id: randomUUID(),
-      title: typeof safeSeed.title === "string" ? safeSeed.title.trim() || "新对话" : "新对话",
-      summary: typeof safeSeed.summary === "string" ? safeSeed.summary : "",
-      messages: [],
-      createdAt: now,
-      updatedAt: now
-    }
-    session.messages = rawMessages.map((message, index) => ({
-      ...message,
-      images: this.copyAttachments(session.id, `${message.id}-${index}`, message.images)
-    }))
-    this.sessions.unshift(session)
-    this.currentSessionId = session.id
-    this.save()
-    return session
-  }
-
-  public get(id: string): ChatSession | null {
-    return this.sessions.find((item) => item.id === id) || null
-  }
-
-  public select(id: string): ChatSession | null {
-    const session = this.get(id)
-    if (!session) return null
-    this.currentSessionId = id
-    this.save()
-    return session
-  }
-
-  public list(): ChatSession[] {
-    return [...this.sessions].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-  }
-
-  public save(): void {
-    try {
-      fs.mkdirSync(path.dirname(this.filePath), { recursive: true })
-      const ordered = this.list()
-      const current = this.get(this.currentSessionId)
-      const sessions = ordered.slice(0, MAX_STORED_SESSIONS)
-      // The selected session is part of the user's active context and must not
-      // disappear merely because an older session crossed the retention limit.
-      if (current && !sessions.some((item) => item.id === current.id)) {
-        sessions.pop()
-        sessions.push(current)
-      }
-      const persistedSessions = sessions.map((session) => ({
-        ...session,
-        messages: session.messages.map((message) => ({
-          ...message,
-          images: message.images.map((image) => {
-            const persistedImage = { ...image }
-            delete persistedImage.preview
-            return persistedImage
-          })
-        }))
-      }))
-      const payload = JSON.stringify({ version: 1, currentSessionId: this.currentSessionId, sessions: persistedSessions }, null, 2)
-      const tempPath = this.filePath + ".tmp"
-      fs.writeFileSync(tempPath, payload, "utf8")
-      fs.renameSync(tempPath, this.filePath)
-      this.dropSessionsOutsideRetention(sessions)
-    } catch (error) {
-      console.error("Failed to save chat sessions:", error)
-    }
-  }
-
-  public delete(id: string): boolean {
-    const before = this.sessions.length
-    this.sessions = this.sessions.filter((item) => item.id !== id)
-    if (this.sessions.length === before) return false
-    if (this.currentSessionId === id) this.currentSessionId = this.list()[0]?.id || ""
-    this.removeAttachmentDirectory(id)
-    this.save()
-    return true
-  }
-
-  private removeAttachmentDirectory(id: string): void {
-    try {
-      fs.rmSync(path.join(path.dirname(this.filePath), "chat-attachments", safeStorageComponent(id)), { recursive: true, force: true })
-    } catch (error) {
-      console.warn("Failed to delete chat attachments:", error)
-    }
-  }
-
-  /**
-   * 超出保留上限的会话不再写盘，远端文件需要回收；本地会话仍然保留在内存中，
-   * 用户重新选中它时会再次写回，并按需重新上传图片。
-   */
-  private dropSessionsOutsideRetention(persisted: ChatSession[]): void {
-    const kept = new Set(persisted.map((session) => session.id))
-    for (const id of [...this.droppedSessionIds]) {
-      if (kept.has(id)) this.droppedSessionIds.delete(id)
-    }
-
-    const dropped = this.sessions.filter((session) => !kept.has(session.id) && !this.droppedSessionIds.has(session.id))
-    if (!dropped.length) return
-    for (const session of dropped) this.droppedSessionIds.add(session.id)
-
-    if (this.onSessionsDropped) {
-      try {
-        this.onSessionsDropped(dropped)
-      } catch (error) {
-        console.warn("Failed to handle dropped chat sessions:", error)
-      }
-    }
-  }
-
-  /**
-   * 清理已经不在会话列表里的附件目录（保留上限裁掉或历史遗留），
-   * 避免截图文件长期占用磁盘。只会在会话文件解析成功时执行。
-   */
-  private removeOrphanAttachmentDirectories(): void {
-    const root = path.join(path.dirname(this.filePath), "chat-attachments")
-    if (!fs.existsSync(root)) return
-
-    const kept = new Set(this.sessions.map((session) => safeStorageComponent(session.id)))
-    try {
-      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-        if (!entry.isDirectory() || kept.has(entry.name)) continue
-        fs.rmSync(path.join(root, entry.name), { recursive: true, force: true })
-      }
-    } catch (error) {
-      console.warn("Failed to clean orphan chat attachments:", error)
-    }
-  }
-
-  public getAttachmentDirectory(sessionId: string): string {
-    return path.join(path.dirname(this.filePath), "chat-attachments", safeStorageComponent(sessionId))
-  }
-
-  public copyAttachments(sessionId: string, messageId: string, images: ChatAttachment[]): ChatAttachment[] {
-    const directory = this.getAttachmentDirectory(sessionId)
-    return images.map((image, index) => {
-      try {
-        if (!image?.path || !fs.existsSync(image.path)) return image
-        fs.mkdirSync(directory, { recursive: true })
-        const extension = path.extname(image.path).match(/^\.[a-z0-9]{1,8}$/i)?.[0] || ".png"
-        const safeMessageId = safeStorageComponent(messageId)
-        const target = path.join(directory, `${safeMessageId}-${index}${extension}`)
-        fs.copyFileSync(image.path, target)
-        return { ...image, path: target }
-      } catch (error) {
-        console.warn("Failed to persist chat attachment:", error)
-        return image
-      }
-    })
-  }
-
-  private load(): void {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(this.filePath, "utf8"))
-      const rawSessions = Array.isArray(parsed) ? parsed : parsed?.sessions
-      if (!Array.isArray(rawSessions)) return
-      this.sessions = rawSessions.flatMap((item): ChatSession[] => {
-        if (!item || typeof item !== "object") return []
-        const value = item as Partial<ChatSession>
-        if (typeof value.id !== "string" || !value.id || !Array.isArray(value.messages)) return []
-        return [{
-          id: value.id,
-          title: typeof value.title === "string" && value.title.trim() ? value.title : "新对话",
-          summary: typeof value.summary === "string" ? value.summary : "",
-          messages: value.messages.map(normalizeMessage).filter((message): message is ChatMessage => Boolean(message)),
-          createdAt: typeof value.createdAt === "string" ? value.createdAt : new Date().toISOString(),
-          updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : new Date().toISOString()
-        }]
-      })
-      const persistedCurrentId = !Array.isArray(parsed) && typeof parsed.currentSessionId === "string"
-        ? parsed.currentSessionId
-        : ""
-      this.currentSessionId = this.get(persistedCurrentId)?.id || this.list()[0]?.id || ""
-      this.removeOrphanAttachmentDirectories()
-    } catch {
-      this.sessions = []
-      this.currentSessionId = ""
-    }
-  }
-}
-
 function estimateTokens(messages: Array<{ content: string; images?: ChatAttachment[] }>): number {
   return messages.reduce((total, message) => {
     const ascii = [...message.content].filter((character) => character.charCodeAt(0) < 128).length
@@ -435,6 +153,7 @@ function truncateToTokenBudget(content: string, tokenBudget: number): string {
 export class ChatService {
   private readonly store = new ChatStore()
   private readonly deps: ChatServiceDeps
+  private readonly provider = new ChatProvider()
   private abortController: AbortController | null = null
 
   constructor(deps: ChatServiceDeps) {
@@ -684,100 +403,26 @@ export class ChatService {
       this.store.save()
     }
 
-    if (config.apiProvider === "openai" || config.apiProvider === "openai-compatible") {
-      const openaiMessages = await this.buildOpenAIMessages(session, history, system, config, signal)
-      this.syncHistoryAttachments(session, history)
-      this.store.save()
-      const client = new OpenAI({
-        apiKey: config.apiKey,
-        ...(config.apiProvider === "openai-compatible" && config.baseURL ? { baseURL: config.baseURL.replace(/\/$/, "") } : {}),
-        timeout: 180000,
-        maxRetries: 0
-      })
-      const useStreaming = config.streamingEnabled && config.apiProvider === "openai-compatible"
-      if (useStreaming) {
-        const stream = await client.chat.completions.create({
-          model: config.extractionModel,
-          messages: openaiMessages,
-          max_tokens: config.maxOutputTokens,
-          temperature: 0.2,
-          stream: true
-        }, { signal })
-        let result = ""
-        for await (const chunk of stream) {
-          const delta = chunk.choices[0]?.delta?.content || ""
-          if (!delta) continue
-          result += delta
-          this.deps.getMainWindow()?.webContents.send("chat-stream", {
-            requestId,
-            sessionId: session.id,
-            content: visibleResponseContent(result),
-            done: false
-          })
-        }
-        return result
-      }
-      const response = await client.chat.completions.create({
-        model: config.extractionModel,
-        messages: openaiMessages,
-        max_tokens: config.maxOutputTokens,
-        temperature: 0.2
-      }, { signal })
-      const result = response.choices[0]?.message?.content || ""
-      this.emitFinalDelta(requestId, session.id, result)
-      return result
-    }
-
-    if (config.apiProvider === "gemini") {
-      const parts: Array<Record<string, unknown>> = [{ text: system }]
-      for (const message of history) {
-        parts.push({ text: `${message.role === "user" ? "用户" : "助手"}：${message.content}` })
-        for (const image of message.images) {
-          const payloadPath = image.transportPath || image.path
-          const url = imageDataUrl(payloadPath, image.mimeType)
-          if (!url) continue
-          parts.push({ inlineData: { mimeType: image.mimeType || "image/png", data: url.split(",")[1] || "" } })
-        }
-      }
-      const response = await axios.default.post(
-        `https://generativelanguage.googleapis.com/v1beta/models/${config.extractionModel}:generateContent?key=${config.apiKey}`,
-        { contents: [{ role: "user", parts }], generationConfig: { temperature: 0.2, maxOutputTokens: config.maxOutputTokens } },
-        { signal }
-      )
-      const result = response.data?.candidates?.[0]?.content?.parts?.map((part: { text?: string }) => part.text || "").join("") || ""
-      this.emitFinalDelta(requestId, session.id, result)
-      return result
-    }
-
-    const client = new Anthropic({ apiKey: config.apiKey })
-    const response = await client.messages.create({
-      model: config.extractionModel,
-      max_tokens: config.maxOutputTokens,
-      temperature: 0.2,
+    const reply = await this.provider.generateReply({
+      config,
       system,
-      messages: history.map((message) => ({
-        role: message.role,
-        content: [
-          { type: "text" as const, text: message.content },
-          ...message.images.flatMap((image) => {
-            const payloadPath = image.transportPath || image.path
-            const url = imageDataUrl(payloadPath, image.mimeType)
-            if (!url) return []
-            return [{
-              type: "image" as const,
-              source: {
-                type: "base64" as const,
-                media_type: image.mimeType || "image/png",
-                data: url.split(",")[1] || ""
-              }
-            }]
-          })
-        ]
-      }))
-    }, { signal })
-    const result = response.content.filter((block) => block.type === "text").map((block) => block.text).join("\n")
-    this.emitFinalDelta(requestId, session.id, result)
-    return result
+      history,
+      openaiMessages:
+        config.apiProvider === "openai-compatible"
+          ? await this.buildOpenAIMessages(session, history, system, config, signal)
+          : [],
+      signal,
+      onStream: (content) => {
+        this.deps.getMainWindow()?.webContents.send("chat-stream", {
+          requestId,
+          sessionId: session.id,
+          content: visibleResponseContent(content),
+          done: false
+        })
+      }
+    })
+    if (!reply.streamed) this.emitFinalDelta(requestId, session.id, reply.content)
+    return reply.content
   }
 
   private prepareHistoryImageTransports(session: ChatSession, history: ChatMessage[]): boolean {
@@ -979,40 +624,7 @@ export class ChatService {
   }
 
   private async completeText(messages: ProviderMessage[], signal: AbortSignal): Promise<string> {
-    const config = configHelper.loadConfig()
-    if (config.apiProvider === "openai" || config.apiProvider === "openai-compatible") {
-      const client = new OpenAI({
-        apiKey: config.apiKey,
-        ...(config.apiProvider === "openai-compatible" && config.baseURL ? { baseURL: config.baseURL.replace(/\/$/, "") } : {}),
-        timeout: 180000,
-        maxRetries: 0
-      })
-      const response = await client.chat.completions.create({
-        model: config.solutionModel || config.extractionModel,
-        messages,
-        max_tokens: config.maxOutputTokens,
-        temperature: 0.1
-      }, { signal })
-      return response.choices[0]?.message?.content || ""
-    }
-    if (config.apiProvider === "gemini") {
-      const prompt = messages.map((message) => `${message.role}: ${message.content}`).join("\n\n")
-      const response = await axios.default.post(
-        `https://generativelanguage.googleapis.com/v1beta/models/${config.solutionModel || config.extractionModel}:generateContent?key=${config.apiKey}`,
-        { contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: 0.1, maxOutputTokens: config.maxOutputTokens } },
-        { signal }
-      )
-      return response.data?.candidates?.[0]?.content?.parts?.map((part: { text?: string }) => part.text || "").join("") || ""
-    }
-    const client = new Anthropic({ apiKey: config.apiKey })
-    const response = await client.messages.create({
-      model: config.solutionModel || config.extractionModel,
-      max_tokens: config.maxOutputTokens,
-      temperature: 0.1,
-      messages: messages.filter((message) => message.role !== "system").map((message) => ({ role: message.role as "user" | "assistant", content: message.content })),
-      system: messages.filter((message) => message.role === "system").map((message) => message.content).join("\n\n")
-    }, { signal })
-    return response.content.filter((block) => block.type === "text").map((block) => block.text).join("\n")
+    return this.provider.completeText(configHelper.loadConfig(), messages, signal)
   }
 
   private async deleteRemoteFiles(

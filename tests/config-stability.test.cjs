@@ -65,7 +65,7 @@ test("损坏的 config.json 不阻塞启动，后续更新会恢复为可解析�
 
   const helper = new ConfigHelper()
   const defaults = helper.loadConfig()
-  assert.equal(defaults.apiProvider, "gemini")
+  assert.equal(defaults.apiProvider, "openai-compatible")
   assert.equal(defaults.maxOutputTokens, 32768)
 
   helper.updateConfig({
@@ -105,15 +105,49 @@ test("无效 provider、模型和历史语言设置会被安全归一化", () =>
   }), "utf8")
 
   const config = new ConfigHelper().loadConfig()
-  assert.equal(config.apiProvider, "gemini")
-  assert.equal(config.extractionModel, "gemini-2.0-flash")
-  assert.equal(config.solutionModel, "gemini-2.0-flash")
-  assert.equal(config.debuggingModel, "gemini-2.0-flash")
+  assert.equal(config.apiProvider, "openai-compatible")
+  assert.equal(config.extractionModel, "gpt-4o")
+  assert.equal(config.solutionModel, "gpt-4o")
+  assert.equal(config.debuggingModel, "gpt-4o")
   assert.equal(config.maxOutputTokens, 32768)
   assert.equal(config.contextMessageLimit, 4)
   assert.equal(config.contextWindowTokens, 128000)
   assert.equal(config.language, "auto")
   assert.equal(config.languageDetectionSource, "auto")
+})
+
+test("旧 OpenAI 和 Gemini provider 会迁移到受支持的协议", () => {
+  resetConfigPath()
+  fs.mkdirSync(configDirectory, { recursive: true })
+
+  fs.writeFileSync(configPath, JSON.stringify({
+    apiProvider: "openai",
+    apiKey: "sk-old-openai",
+    baseURL: "",
+    extractionModel: "gpt-4o",
+    solutionModel: "gpt-4o",
+    debuggingModel: "gpt-4o"
+  }), "utf8")
+  const migratedOpenAI = new ConfigHelper().loadConfig()
+  assert.equal(migratedOpenAI.apiProvider, "openai-compatible")
+  assert.equal(migratedOpenAI.baseURL, "https://api.openai.com/v1")
+  assert.equal(migratedOpenAI.apiKey, "sk-old-openai")
+
+  fs.writeFileSync(configPath, JSON.stringify({
+    apiProvider: "gemini",
+    apiKey: "gemini-key",
+    baseURL: "",
+    extractionModel: "gemini-2.0-flash",
+    solutionModel: "gemini-2.0-flash",
+    debuggingModel: "gemini-2.0-flash"
+  }), "utf8")
+  const migratedGemini = new ConfigHelper().loadConfig()
+  assert.equal(migratedGemini.apiProvider, "openai-compatible")
+  assert.equal(migratedGemini.apiKey, "")
+  assert.equal(migratedGemini.baseURL, "")
+  assert.equal(migratedGemini.extractionModel, "gpt-4o")
+  assert.equal(migratedGemini.solutionModel, "gpt-4o")
+  assert.equal(migratedGemini.debuggingModel, "gpt-4o")
 })
 
 test("配置路径不可读或不可写时仍返回默认配置而不抛出", () => {
@@ -122,6 +156,6 @@ test("配置路径不可读或不可写时仍返回默认配置而不抛出", ()
 
   const helper = new ConfigHelper()
   assert.doesNotThrow(() => helper.loadConfig())
-  assert.equal(helper.loadConfig().apiProvider, "gemini")
+  assert.equal(helper.loadConfig().apiProvider, "openai-compatible")
   assert.doesNotThrow(() => helper.updateConfig({ opacity: 0.5 }))
 })

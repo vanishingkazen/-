@@ -1,7 +1,7 @@
 // ipcHandlers.ts
 
 import { BrowserWindow, clipboard, ipcMain, shell, type WebContents } from "electron"
-import { IIpcHandlerDeps } from "./main"
+import type { IIpcHandlerDeps } from "./contracts"
 import { configHelper } from "./ConfigHelper"
 import type { VoiceSource } from "./VoiceRecognitionHelper"
 import { ensureInterviewContextFile, getInterviewContextStatus } from "./InterviewContextHelper"

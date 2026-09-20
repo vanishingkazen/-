@@ -138,9 +138,11 @@ export class VoiceRecognitionHelper {
         )
         const threshold = microphoneText.length >= 12
           ? 0.68
-          : microphoneText.length >= 5
-            ? 0.78
-            : 1
+          : microphoneText.length >= 8
+            ? 0.72
+            : microphoneText.length >= 5
+              ? 0.78
+              : 1
         isEcho = exactCoverage || coverage >= threshold
       }
       if (!isEcho && microphoneText.length >= 8 && fullSystemText) {
