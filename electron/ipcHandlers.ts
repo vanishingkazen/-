@@ -146,7 +146,8 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
       systemTranscript: "",
       microphoneTranscript: "",
       rawMicrophoneTranscript: "",
-      removedSegments: 0
+      removedSegments: 0,
+      turns: []
     }
   })
   ipcMain.handle("voice-correct-conversation", async (_event, conversation) => {

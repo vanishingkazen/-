@@ -44,7 +44,7 @@ interface ChatMessage {
   content: string
   images?: ScreenshotAttachment[]
   streaming?: boolean
-  speaker?: "用户A" | "用户B"
+  speaker?: "面试官" | "面试者"
   stage?: "提交截图" | "题目提取" | "IQ 视觉解题" | "解答" | "调试" | "追问" | "语音输入" | "对话"
 }
 
@@ -69,11 +69,17 @@ interface AudioCaptureChain {
 }
 
 type VoiceSource = "microphone" | "system"
+interface VoiceConversationTurn {
+  speaker: "interviewer" | "candidate"
+  text: string
+  completedAt: number
+}
 interface VoiceConversation {
   systemTranscript: string
   microphoneTranscript: string
   rawMicrophoneTranscript: string
   removedSegments: number
+  turns: VoiceConversationTurn[]
 }
 
 const emptyAudioCaptureChain = (): AudioCaptureChain => ({
@@ -82,6 +88,22 @@ const emptyAudioCaptureChain = (): AudioCaptureChain => ({
   sourceNode: null,
   processor: null
 })
+
+const voiceSpeakerLabel = (speaker: VoiceConversationTurn["speaker"]) =>
+  speaker === "interviewer" ? "面试官" : "面试者"
+
+const formatVoiceConversation = (conversation: VoiceConversation) => {
+  if (conversation.turns.length) {
+    return conversation.turns
+      .filter((turn) => turn.text.trim())
+      .map((turn) => `${voiceSpeakerLabel(turn.speaker)}：${turn.text.trim()}`)
+      .join("\n")
+  }
+  return [
+    conversation.systemTranscript.trim() ? `面试官：${conversation.systemTranscript.trim()}` : "",
+    conversation.microphoneTranscript.trim() ? `面试者：${conversation.microphoneTranscript.trim()}` : ""
+  ].filter(Boolean).join("\n")
+}
 
 SyntaxHighlighter.registerLanguage("python", python)
 SyntaxHighlighter.registerLanguage("javascript", javascript)
@@ -230,25 +252,32 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
   const [phase, setPhase] = useState("")
   const [sessionTitle, setSessionTitle] = useState("新建解题会话")
   const [voiceActive, setVoiceActive] = useState(false)
+  const [voiceTransitioning, setVoiceTransitioning] = useState(false)
   const [systemVoiceStatus, setSystemVoiceStatus] = useState("")
   const [systemVoicePartial, setSystemVoicePartial] = useState("")
-  const [systemVoiceTranscript, setSystemVoiceTranscript] = useState("")
   const [microphoneVoiceStatus, setMicrophoneVoiceStatus] = useState("")
   const [microphoneVoicePartial, setMicrophoneVoicePartial] = useState("")
-  const [microphoneVoiceTranscript, setMicrophoneVoiceTranscript] = useState("")
+  const [voiceTurns, setVoiceTurns] = useState<VoiceConversationTurn[]>([])
   const [interviewContextEnabled, setInterviewContextEnabled] = useState(false)
   const [interviewContextAvailable, setInterviewContextAvailable] = useState(false)
   const [interviewContextPath, setInterviewContextPath] = useState("")
   const [interviewContextCharacters, setInterviewContextCharacters] = useState(0)
   const [interviewContextBusy, setInterviewContextBusy] = useState(false)
   const activeAssistantId = useRef<string | null>(null)
+  const pendingLocalSendRef = useRef<{ requestId: string; text: string } | null>(null)
   const sessionIdRef = useRef("")
   const attachmentsRef = useRef<ScreenshotAttachment[]>([])
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const followOutputRef = useRef(true)
+  const scrollFrameRef = useRef<number | null>(null)
+  const pendingScrollBehaviorRef = useRef<"auto" | "smooth">("auto")
   const voiceActiveRef = useRef(false)
+  const voiceTransitioningRef = useRef(false)
   const systemVoiceTranscriptRef = useRef("")
   const microphoneVoiceTranscriptRef = useRef("")
+  const voiceTurnsRef = useRef<VoiceConversationTurn[]>([])
+  const voiceConversationRef = useRef<VoiceConversation | null>(null)
   const audioCaptureRef = useRef<Record<VoiceSource, AudioCaptureChain>>({
     system: emptyAudioCaptureChain(),
     microphone: emptyAudioCaptureChain()
@@ -268,6 +297,32 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
     },
     []
   )
+
+  const handleMessageListScroll = useCallback(() => {
+    const element = scrollRef.current
+    if (!element) return
+
+    const distanceFromBottom =
+      element.scrollHeight - element.scrollTop - element.clientHeight
+    followOutputRef.current = distanceFromBottom < 64
+  }, [])
+
+  const scheduleScrollToBottom = useCallback((streaming: boolean) => {
+    pendingScrollBehaviorRef.current = streaming ? "auto" : "smooth"
+    if (scrollFrameRef.current !== null || !followOutputRef.current) return
+
+    scrollFrameRef.current = window.requestAnimationFrame(() => {
+      scrollFrameRef.current = null
+      const element = scrollRef.current
+      if (!element || !followOutputRef.current) return
+
+      if (pendingScrollBehaviorRef.current === "smooth") {
+        element.scrollTo({ top: element.scrollHeight, behavior: "smooth" })
+      } else {
+        element.scrollTop = element.scrollHeight
+      }
+    })
+  }, [])
 
   const showLocalSendError = useCallback(
     (assistantId: string, text: string, images: ScreenshotAttachment[], error: string) => {
@@ -311,43 +366,60 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
     setVoiceActive(false)
   }, [])
 
-  const submitVoiceMessage = useCallback(async (conversation: VoiceConversation) => {
-    const systemText = conversation.systemTranscript.trim()
-    const microphoneText = conversation.microphoneTranscript.trim()
-    if (!systemText && !microphoneText) {
-      showToast("没有识别到语音", "请确认扬声器或麦克风有声音后重试", "error")
+  const setVoiceQueue = useCallback((turns: VoiceConversationTurn[]) => {
+    voiceTurnsRef.current = turns
+    setVoiceTurns(turns)
+  }, [])
+
+  const clearVoiceQueue = useCallback(async (notifyMain = true) => {
+    setVoiceQueue([])
+    voiceConversationRef.current = null
+    setSystemVoicePartial("")
+    systemVoiceTranscriptRef.current = ""
+    setMicrophoneVoicePartial("")
+    microphoneVoiceTranscriptRef.current = ""
+    if (notifyMain) {
+      try {
+        await window.electronAPI.clearVoiceContext()
+      } catch (error) {
+        console.warn("Unable to clear voice context in main process:", error)
+      }
+    }
+  }, [setVoiceQueue])
+
+  const sendVoiceConversation = useCallback(async (conversation: VoiceConversation) => {
+    const conversationText = formatVoiceConversation(conversation)
+    if (!conversationText) {
+      showToast("没有识别到语音", "请确认系统音频或麦克风有声音后重试", "error")
       return
     }
-    const conversationText = [
-      systemText ? `用户A（扬声器）：${systemText}` : "",
-      microphoneText ? `用户B（麦克风）：${microphoneText}` : ""
-    ].filter(Boolean).join("\n")
     if (busy) {
-      setInput((current) => current ? `${current}\n${conversationText}` : conversationText)
-      showToast("当前回答尚未结束", "语音内容已放入输入框", "neutral")
+      showToast("当前回答尚未结束", "请等待 AI 回复完成后再发送语音上下文", "neutral")
       return
     }
 
+    setBusy(true)
+    setPhase("正在校正语音文本...")
+    let correctedConversation = conversation
+    try {
+      correctedConversation = await window.electronAPI.correctVoiceConversation(conversation)
+    } catch (error) {
+      console.warn("Voice transcript correction failed; using raw transcript:", error)
+    }
+    const correctedConversationText = formatVoiceConversation(correctedConversation)
     const requestAttachments = [...attachmentsRef.current]
-    const voiceAnswerFormat = `请给出用户B在面试现场可以直接说出口的回答：
+    const voiceAnswerFormat = `请给出面试者在线上会议中可以直接说出口的回答：
 - 默认只写一个短段落，用大白话解释，先说结论，再补一个简单例子或关键点。
 - 如果面试背景资料中有相关项目经历，优先用第一人称结合我们的真实项目来回答，例如“在我们 PandoraQ 项目里……”，不要只背通用定义；资料没有的信息不要编造。
 - 控制在3～6句话、约20～40秒能说完；不要写标题、分层编号、项目符号或长篇教程。
 - 不主动展开英文全称和边缘细节，不说“好的”“我来分几层讲”等开场白。
 - 只有问题明确要求详细分析、完整方案或代码时，才适当展开。`
-    const requestText = `请从下面的双声道面试转写中，找到用户A真正需要用户B回答的问题，并直接给出自然、口语化的回答。\n\n${voiceAnswerFormat}\n\n${conversationText}`
+    const requestText = `以下是线上会议双方对话上下文，系统音频来自面试官，麦克风来自面试者。请找到面试官最近真正需要面试者回答且尚未解决的核心问题，并直接给出自然、口语化的帮助和回答，不要逐句复述。\n\n${voiceAnswerFormat}\n\n${correctedConversationText}`
     const assistantId = createId("assistant")
     activeAssistantId.current = assistantId
-    setSystemVoiceTranscript("")
-    setSystemVoicePartial("")
-    systemVoiceTranscriptRef.current = ""
-    setMicrophoneVoiceTranscript("")
-    setMicrophoneVoicePartial("")
-    microphoneVoiceTranscriptRef.current = ""
-    setBusy(true)
-    void window.electronAPI.clearVoiceContext()
+    followOutputRef.current = true
 
-    setPhase("正在发送语音问题...")
+    setPhase("正在生成面试回答...")
     try {
       const result = await window.electronAPI.sendChatMessage({
         requestId: assistantId,
@@ -356,15 +428,17 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
         images: requestAttachments
       })
       if (!result.success) {
-        showLocalSendError(assistantId, requestText, requestAttachments, result.error || "语音消息发送失败")
+        showLocalSendError(assistantId, requestText, requestAttachments, result.error || "语音上下文发送失败")
+        return
       }
+      await clearVoiceQueue()
     } catch (error) {
-      showLocalSendError(assistantId, requestText, requestAttachments, error instanceof Error ? error.message : "语音消息发送失败")
+      showLocalSendError(assistantId, requestText, requestAttachments, error instanceof Error ? error.message : "语音上下文发送失败")
     } finally {
       setBusy(false)
       setPhase("")
     }
-  }, [busy, sessionId, showLocalSendError, showToast])
+  }, [busy, clearVoiceQueue, sessionId, showLocalSendError, showToast])
 
   const attachAudioStream = useCallback((stream: MediaStream, voiceSource: VoiceSource) => {
     const context = new AudioContext()
@@ -380,11 +454,13 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
   }, [])
 
   const startVoiceInput = useCallback(async () => {
-    if (voiceActiveRef.current) return
+    if (voiceActiveRef.current || voiceTransitioningRef.current) return
     if (busy) {
       showToast("当前回答尚未结束", "请等待 AI 回复完成后再开始语音输入", "neutral")
       return
     }
+    voiceTransitioningRef.current = true
+    setVoiceTransitioning(true)
     let systemStream: MediaStream | null = null
     let microphoneStream: MediaStream | null = null
     try {
@@ -394,7 +470,7 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
       })
       systemStream.getVideoTracks().forEach((track) => track.stop())
       if (!systemStream.getAudioTracks().length) {
-        throw new Error("没有获取到 Windows 扬声器声音，请在共享时启用音频")
+        throw new Error("没有获取到系统扬声器声音，请在共享时启用音频")
       }
 
       microphoneStream = await navigator.mediaDevices.getUserMedia({
@@ -428,8 +504,8 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
       microphoneStream = null
       voiceActiveRef.current = true
       setVoiceActive(true)
-      setSystemVoiceStatus("正在听用户A...")
-      setMicrophoneVoiceStatus("正在听用户B...")
+      setSystemVoiceStatus("正在听面试官...")
+      setMicrophoneVoiceStatus("正在听面试者...")
     } catch (error) {
       systemStream?.getTracks().forEach((track) => track.stop())
       microphoneStream?.getTracks().forEach((track) => track.stop())
@@ -437,28 +513,56 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
       void window.electronAPI.stopVoiceRecognition("system")
       void window.electronAPI.stopVoiceRecognition("microphone")
       showToast("语音采集不可用", error instanceof Error ? error.message : "无法访问扬声器或麦克风", "error")
+    } finally {
+      voiceTransitioningRef.current = false
+      setVoiceTransitioning(false)
     }
   }, [attachAudioStream, busy, releaseVoiceCapture, showToast])
 
   const stopVoiceInput = useCallback(async () => {
-    releaseVoiceCapture()
-    await Promise.all([
-      window.electronAPI.stopVoiceRecognition("system"),
-      window.electronAPI.stopVoiceRecognition("microphone")
-    ])
-    const conversation = await window.electronAPI.getVoiceConversation()
-    setPhase("正在校正语音文本...")
-    const correctedConversation = await window.electronAPI.correctVoiceConversation(conversation)
-    await submitVoiceMessage({
-      ...correctedConversation,
-      systemTranscript: correctedConversation.systemTranscript || systemVoiceTranscriptRef.current,
-      microphoneTranscript: correctedConversation.rawMicrophoneTranscript
-        ? correctedConversation.microphoneTranscript
-        : microphoneVoiceTranscriptRef.current
-    })
-  }, [releaseVoiceCapture, submitVoiceMessage])
+    if (!voiceActiveRef.current || voiceTransitioningRef.current) return
+    voiceTransitioningRef.current = true
+    setVoiceTransitioning(true)
+    try {
+      releaseVoiceCapture()
+      setPhase("正在结束语音采集...")
+      await Promise.all([
+        window.electronAPI.stopVoiceRecognition("system"),
+        window.electronAPI.stopVoiceRecognition("microphone")
+      ])
+      const conversation = await window.electronAPI.getVoiceConversation()
+      const resolvedConversation: VoiceConversation = {
+        ...conversation,
+        systemTranscript: conversation.systemTranscript || systemVoiceTranscriptRef.current,
+        microphoneTranscript: conversation.rawMicrophoneTranscript
+          ? conversation.microphoneTranscript
+          : microphoneVoiceTranscriptRef.current,
+        turns: conversation.turns.length ? conversation.turns : voiceTurnsRef.current
+      }
+      voiceConversationRef.current = resolvedConversation
+      setVoiceQueue(resolvedConversation.turns)
+      setSystemVoicePartial("")
+      setMicrophoneVoicePartial("")
+      setSystemVoiceStatus(resolvedConversation.turns.length ? "已停止，可继续录音或发送给 AI" : "已停止，未识别到对话")
+      setMicrophoneVoiceStatus(resolvedConversation.turns.length ? "已停止，可继续录音或发送给 AI" : "已停止，未识别到对话")
+      setPhase("")
+    } finally {
+      voiceTransitioningRef.current = false
+      setVoiceTransitioning(false)
+    }
+  }, [releaseVoiceCapture, setVoiceQueue])
+
+  const generateVoiceAnswer = useCallback(() => {
+    const conversation = voiceConversationRef.current
+    if (!conversation) {
+      showToast("没有可发送的语音上下文", "请先完成一段录音", "neutral")
+      return
+    }
+    void sendVoiceConversation(conversation)
+  }, [sendVoiceConversation, showToast])
 
   const toggleVoiceInput = useCallback(() => {
+    if (voiceTransitioningRef.current) return
     if (voiceActiveRef.current) void stopVoiceInput()
     else void startVoiceInput()
   }, [startVoiceInput, stopVoiceInput])
@@ -572,49 +676,59 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
           behavior: "smooth"
         })
       }),
-      window.electronAPI.onToggleVoiceInput(toggleVoiceInput),
       window.electronAPI.onVoiceStatus(({ source, state, message }) => {
         if (source === "system") setSystemVoiceStatus(message)
         else setMicrophoneVoiceStatus(message)
-        if (state === "error") releaseVoiceCapture()
+        if (state === "error") {
+          releaseVoiceCapture()
+          void window.electronAPI.stopVoiceRecognition("system")
+          void window.electronAPI.stopVoiceRecognition("microphone")
+        }
       }),
       window.electronAPI.onVoicePartial(({ source, text }) => {
         if (source === "system") setSystemVoicePartial(text)
         else setMicrophoneVoicePartial(text)
       }),
-      window.electronAPI.onVoiceFinal(({ source, fullText }) => {
+      window.electronAPI.onVoiceFinal(({ source, text, fullText, completedAt }) => {
         if (source === "system") {
           systemVoiceTranscriptRef.current = fullText
-          setSystemVoiceTranscript(fullText)
           setSystemVoicePartial("")
         } else {
           microphoneVoiceTranscriptRef.current = fullText
-          setMicrophoneVoiceTranscript(fullText)
           setMicrophoneVoicePartial("")
         }
+        setVoiceQueue([
+          ...voiceTurnsRef.current,
+          {
+            speaker: source === "system" ? "interviewer" : "candidate",
+            text,
+            completedAt
+          }
+        ])
       }),
       window.electronAPI.onVoiceContextCleared(({ source }) => {
         if (source === "system") {
           systemVoiceTranscriptRef.current = ""
-          setSystemVoiceTranscript("")
           setSystemVoicePartial("")
         } else {
           microphoneVoiceTranscriptRef.current = ""
-          setMicrophoneVoiceTranscript("")
           setMicrophoneVoicePartial("")
         }
-      }),
-      window.electronAPI.onVoiceSubmit(({ requestId, text }) => {
-        activeAssistantId.current = requestId
-        setBusy(true)
-        setMessages((current) => [
-          ...current,
-          { id: createId("user"), role: "user", content: text, stage: "语音输入" },
-          { id: requestId, role: "assistant", content: "", streaming: true, stage: "追问" }
-        ])
+        setVoiceQueue([])
+        voiceConversationRef.current = null
       }),
       window.electronAPI.onChatStarted((data) => {
         if (sessionIdRef.current && data.sessionId !== sessionIdRef.current) return
+        const acceptedImagePaths = data.acceptedImagePaths || []
+        if (acceptedImagePaths.length) {
+          const accepted = new Set(acceptedImagePaths)
+          setAttachments((current) => current.filter((item) => !accepted.has(item.path)))
+        }
+        const pendingSend = pendingLocalSendRef.current
+        if (pendingSend?.requestId === data.requestId) {
+          setInput((current) => current === pendingSend.text ? "" : current)
+          pendingLocalSendRef.current = null
+        }
         setSessionId(data.sessionId)
         sessionIdRef.current = data.sessionId
         activeAssistantId.current = data.requestId
@@ -673,10 +787,10 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
           sessionIdRef.current = data.session.id
           setSessionTitle(data.session.title || "新对话")
         }
-        setSystemVoiceTranscript("")
         setSystemVoicePartial("")
-        setMicrophoneVoiceTranscript("")
         setMicrophoneVoicePartial("")
+        setVoiceQueue([])
+        voiceConversationRef.current = null
         if (!data?.session) setSessionTitle("新建解题会话")
         setBusy(false)
         setPhase("")
@@ -684,7 +798,7 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
       })
     ]
     return () => cleanups.forEach((cleanup) => cleanup())
-  }, [releaseVoiceCapture, removeLastAttachment, toggleVoiceInput, updateAssistant])
+  }, [releaseVoiceCapture, removeLastAttachment, setVoiceQueue, updateAssistant])
 
   useEffect(() => () => {
     releaseVoiceCapture()
@@ -693,8 +807,16 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
   }, [releaseVoiceCapture])
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" })
-  }, [messages, phase])
+    const streaming = messages.some((message) => message.streaming)
+    scheduleScrollToBottom(streaming)
+  }, [messages, phase, scheduleScrollToBottom])
+
+  useEffect(() => () => {
+    if (scrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(scrollFrameRef.current)
+      scrollFrameRef.current = null
+    }
+  }, [])
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
@@ -724,15 +846,16 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
   }
 
   const send = async () => {
-    const text = input.trim()
+    const inputValue = input
+    const text = inputValue.trim()
     if (busy || (!text && attachments.length === 0)) return
 
     const requestAttachments = [...attachments]
     const assistantId = createId("assistant")
     activeAssistantId.current = assistantId
+    pendingLocalSendRef.current = { requestId: assistantId, text: inputValue }
+    followOutputRef.current = true
 
-    setInput("")
-    if (requestAttachments.length > 0) setAttachments([])
     setBusy(true)
 
     setPhase("正在发送消息...")
@@ -744,9 +867,15 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
         images: requestAttachments
       })
       if (!result.success) {
+        if (pendingLocalSendRef.current?.requestId === assistantId) {
+          pendingLocalSendRef.current = null
+        }
         showLocalSendError(assistantId, text, requestAttachments, result.error || "消息发送失败")
       }
     } catch (error) {
+      if (pendingLocalSendRef.current?.requestId === assistantId) {
+        pendingLocalSendRef.current = null
+      }
       showLocalSendError(assistantId, text, requestAttachments, error instanceof Error ? error.message : "消息发送失败")
     } finally {
       setBusy(false)
@@ -761,6 +890,7 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
     }
     try {
       const session = await window.electronAPI.newChatSession()
+      await clearVoiceQueue()
       setSessionId(session?.id || "")
       sessionIdRef.current = session?.id || ""
       setMessages([])
@@ -773,12 +903,16 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
       showToast("新建会话失败", error instanceof Error ? error.message : "无法创建新的聊天会话", "error")
     }
     window.setTimeout(() => inputRef.current?.focus(), 0)
-  }, [busy, showToast])
+  }, [busy, clearVoiceQueue, showToast])
   useEffect(() => {
     return window.electronAPI.onNewChatSession(() => {
       void newSession()
     })
   }, [newSession])
+
+  const hasVoiceContext = voiceActive ||
+    voiceTurns.length > 0 ||
+    Boolean(systemVoicePartial || microphoneVoicePartial)
 
   return (
     <main className="pandora-chat-shell">
@@ -799,8 +933,9 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
           </button>
           <button
             className={`chat-icon-button ${voiceActive ? "voice-active" : ""}`}
-            title={`开始/停止扬声器与麦克风双声道识别（${COMMAND_KEY} + Shift + M）`}
+            title={`${voiceActive ? "停止" : "开始"}线上会议语音识别`}
             onClick={toggleVoiceInput}
+            disabled={voiceTransitioning || (busy && !voiceActive)}
           >
             {voiceActive ? <MicOff size={15} /> : <Mic size={15} />}
           </button>
@@ -833,8 +968,8 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
         </div>
       </header>
 
-      <section ref={scrollRef} className="pandora-message-list">
-        {messages.length === 0 && !busy ? (
+      <section ref={scrollRef} className="pandora-message-list" onScroll={handleMessageListScroll}>
+        {messages.length === 0 && !busy && !hasVoiceContext ? (
           <div className="chat-empty-state">
             <div className="chat-empty-icon"><Code2 size={25} /></div>
             <h1>从截图开始，或者直接输入问题</h1>
@@ -873,27 +1008,68 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
                 <span>{phase}</span>
               </div>
             ) : null}
-            {(voiceActive || systemVoiceTranscript || systemVoicePartial) ? (
-              <article className="chat-message chat-message-user">
-                <div className="chat-message-label">
-                  用户A · 扬声器{systemVoiceStatus ? ` · ${systemVoiceStatus}` : ""}
+            {hasVoiceContext ? (
+              <section className="mt-4 rounded-xl border border-black/10 bg-white/70 p-3 shadow-sm">
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-[11px] font-medium text-black/75">线上会议语音上下文</div>
+                    <div className="mt-0.5 text-[10px] text-black/40">
+                      {voiceActive
+                        ? "正在录音并转写，请点击停止后确认是否发送"
+                        : `已保留 ${voiceTurns.length} 段对话，尚未发送给 AI`}
+                    </div>
+                  </div>
+                  {!voiceActive && voiceTurns.length > 0 ? (
+                    <div className="flex shrink-0 items-center gap-2">
+                      <button
+                        type="button"
+                        className="rounded-md border border-black/10 px-2 py-1 text-[10px] text-black/55 hover:bg-black/[0.04]"
+                        onClick={() => void clearVoiceQueue()}
+                        disabled={busy}
+                      >
+                        清空本轮
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-md bg-black px-2.5 py-1 text-[10px] text-white hover:bg-black/80 disabled:cursor-not-allowed disabled:opacity-40"
+                        onClick={generateVoiceAnswer}
+                        disabled={busy}
+                      >
+                        发送给 AI
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
-                <MessageContent
-                  content={[systemVoiceTranscript, systemVoicePartial].filter(Boolean).join(" ") || "等待扬声器声音..."}
-                  currentLanguage={currentLanguage}
-                />
-              </article>
-            ) : null}
-            {(voiceActive || microphoneVoiceTranscript || microphoneVoicePartial) ? (
-              <article className="chat-message chat-message-user">
-                <div className="chat-message-label">
-                  用户B · 麦克风{microphoneVoiceStatus ? ` · ${microphoneVoiceStatus}` : ""}
+                <div className="space-y-2">
+                  {voiceTurns.map((turn, index) => (
+                    <div key={`${turn.completedAt}-${turn.speaker}-${index}`} className="flex gap-2 text-[11px] leading-5">
+                      <span className={`mt-0.5 shrink-0 font-medium ${turn.speaker === "interviewer" ? "text-amber-700" : "text-sky-700"}`}>
+                        {voiceSpeakerLabel(turn.speaker)}
+                      </span>
+                      <span className="whitespace-pre-wrap text-black/70">{turn.text}</span>
+                    </div>
+                  ))}
+                  {systemVoicePartial ? (
+                    <div className="flex gap-2 text-[11px] leading-5 text-black/45">
+                      <span className="shrink-0 font-medium text-amber-700">面试官</span>
+                      <span className="whitespace-pre-wrap">{systemVoicePartial}</span>
+                    </div>
+                  ) : null}
+                  {microphoneVoicePartial ? (
+                    <div className="flex gap-2 text-[11px] leading-5 text-black/45">
+                      <span className="shrink-0 font-medium text-sky-700">面试者</span>
+                      <span className="whitespace-pre-wrap">{microphoneVoicePartial}</span>
+                    </div>
+                  ) : null}
+                  {!voiceTurns.length && !systemVoicePartial && !microphoneVoicePartial ? (
+                    <div className="text-[11px] text-black/35">等待系统音频和麦克风声音...</div>
+                  ) : null}
                 </div>
-                <MessageContent
-                  content={[microphoneVoiceTranscript, microphoneVoicePartial].filter(Boolean).join(" ") || "等待麦克风声音..."}
-                  currentLanguage={currentLanguage}
-                />
-              </article>
+                <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-black/35">
+                  <span>面试官 · {systemVoiceStatus || "未开始"}</span>
+                  <span>面试者 · {microphoneVoiceStatus || "未开始"}</span>
+                </div>
+              </section>
             ) : null}
           </div>
         )}
@@ -936,8 +1112,13 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
               <button className="chat-tool-button" onClick={takeScreenshot} disabled={busy} title={`截图（${COMMAND_KEY} + H）`}>
                 <Camera size={15} /><span>截图</span>
               </button>
-              <button className={`chat-tool-button ${voiceActive ? "voice-active" : ""}`} onClick={toggleVoiceInput} title={`${voiceActive ? "停止" : "开始"}扬声器与麦克风双声道识别（${COMMAND_KEY} + Shift + M）`}>
-                {voiceActive ? <MicOff size={15} /> : <Mic size={15} />}<span>{voiceActive ? "停止" : "扬声器+麦克风"}</span>
+              <button
+                className={`chat-tool-button ${voiceActive ? "voice-active" : ""}`}
+                onClick={toggleVoiceInput}
+                disabled={voiceTransitioning || (busy && !voiceActive)}
+                title={`${voiceActive ? "停止" : "开始"}线上会议语音识别`}
+              >
+                {voiceActive ? <MicOff size={15} /> : <Mic size={15} />}<span>{voiceActive ? "停止录音" : "开始录音"}</span>
               </button>
               <button
                 className={`interview-context-toggle ${interviewContextEnabled ? "enabled" : ""}`}

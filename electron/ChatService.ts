@@ -14,6 +14,7 @@ import {
   uploadDeepSeekImage,
   type DeepSeekFilesConfig
 } from "./DeepSeekFilesApi"
+import { loadInterviewContextPrompt } from "./InterviewContextHelper"
 
 export interface ChatAttachment {
   path: string
@@ -53,6 +54,12 @@ export interface ChatSession {
 
 export interface ChatServiceDeps {
   getMainWindow: () => BrowserWindow | null
+  onMessageAccepted?: (accepted: {
+    sessionId: string
+    requestId: string
+    acceptedImagePaths: string[]
+    persistedImagePaths: string[]
+  }) => void
 }
 
 type ProviderMessage = { role: "system" | "user" | "assistant"; content: string }
@@ -131,13 +138,25 @@ function visibleResponseContent(content: string): string {
   return parseDetectedLanguage(content).content
 }
 
-function buildSystemPrompt(configLanguage: string, summary: string): string {
+function buildSystemPrompt(configLanguage: string, summary: string, additionalPrompt = ""): string {
   const detectedLanguage = normalizeDetectedLanguage(configLanguage)
   const languageContext = detectedLanguage
     ? `当前截图/上下文已识别出的编程语言是：${detectedLanguage}。除非新截图明确显示其他语言，否则沿用该语言。`
     : "如果本轮消息或上下文包含代码截图，请根据截图自动判断编程语言，不要默认使用 Python。"
   const detectionProtocol = "如果本轮或上下文包含代码截图且能确定语言，请在最终回答第一行单独输出 [LANGUAGE: <language>]，language 只能使用 python、javascript、typescript、java、cpp、csharp、golang、rust、swift、kotlin、ruby、sql、r；无法确定或没有代码截图时不要输出该标记。该标记仅供程序解析，不要解释。"
-  return [SYSTEM_PROMPT, languageContext, detectionProtocol, summary ? `此前对话摘要：\n${summary}` : ""].filter(Boolean).join("\n\n")
+  return [
+    SYSTEM_PROMPT,
+    additionalPrompt,
+    languageContext,
+    detectionProtocol,
+    summary ? `此前对话摘要：\n${summary}` : ""
+  ].filter(Boolean).join("\n\n")
+}
+
+function isVoiceInterviewRequest(content: string): boolean {
+  return content.includes("面试官（系统音频）") ||
+    content.includes("面试者（麦克风）") ||
+    content.includes("线上会议双方对话上下文")
 }
 
 function safeStorageComponent(value: string): string {
@@ -510,11 +529,27 @@ export class ChatService {
     session.updatedAt = new Date().toISOString()
     this.store.save()
 
-    mainWindow.webContents.send("chat-started", { sessionId: session.id, requestId, userMessage })
-
     const controller = new AbortController()
     this.abortController = controller
     try {
+      const acceptedImagePaths = safeImages.map((image) => image.path)
+      mainWindow.webContents.send("chat-started", {
+        sessionId: session.id,
+        requestId,
+        userMessage,
+        acceptedImagePaths
+      })
+      try {
+        this.deps.onMessageAccepted?.({
+          sessionId: session.id,
+          requestId,
+          acceptedImagePaths,
+          persistedImagePaths: userMessage.images.map((image) => image.path)
+        })
+      } catch (error) {
+        console.warn("Failed to consume accepted chat attachments:", error)
+      }
+
       await this.compressContextIfNeeded(session, controller.signal)
       const rawResponse = await this.generateReply(session, requestId, controller.signal)
       const parsedResponse = parseDetectedLanguage(rawResponse)
@@ -613,7 +648,26 @@ export class ChatService {
 
   private async generateReply(session: ChatSession, requestId: string, signal: AbortSignal): Promise<string> {
     const config = configHelper.loadConfig()
-    const system = buildSystemPrompt(config.language, session.summary)
+    const latestUserMessage = [...session.messages].reverse().find((message) => message.role === "user")
+    const isVoiceInterview = latestUserMessage
+      ? isVoiceInterviewRequest(latestUserMessage.content)
+      : false
+    let voiceInterviewPrompt = ""
+    if (isVoiceInterview) {
+      voiceInterviewPrompt = `当前是线上会议中的技术面试语音辅助任务。系统音频转写代表面试官，麦克风转写代表面试者。请保持两人的角色和发言顺序，只针对最近尚未解决的核心问题，以面试者第一人称给出可以直接说出口的帮助和回答。不要逐句回应，不要复述原始转写。`
+      try {
+        const interviewContextPrompt = loadInterviewContextPrompt(
+          config.interviewContextEnabled,
+          config.interviewContextPath
+        )
+        if (interviewContextPrompt) {
+          voiceInterviewPrompt = [voiceInterviewPrompt, interviewContextPrompt].join("\n\n")
+        }
+      } catch (error) {
+        console.warn("Voice interview context unavailable:", error)
+      }
+    }
+    const system = buildSystemPrompt(config.language, session.summary, voiceInterviewPrompt)
     let historyStart = Math.max(0, session.messages.length - config.contextMessageLimit)
     while (historyStart > 0 && session.messages[historyStart]?.role !== "user") {
       historyStart -= 1

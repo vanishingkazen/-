@@ -193,7 +193,7 @@ function defaultConfig() {
   }
 }
 
-function setup(overrides = {}) {
+function setup(overrides = {}, serviceOverrides = {}) {
   const sessionFile = path.join(appDataPath, "steamgamecode", "chat-sessions.json")
   fs.rmSync(sessionFile, { force: true })
   configHelper.saveConfig({ ...defaultConfig(), ...overrides })
@@ -215,7 +215,10 @@ function setup(overrides = {}) {
       }
     }
   }
-  const service = new ChatService({ getMainWindow: () => mainWindow })
+  const service = new ChatService({
+    getMainWindow: () => mainWindow,
+    ...serviceOverrides
+  })
   return { service, events }
 }
 
@@ -268,6 +271,28 @@ test("多轮对话按顺序携带历史并持久化消息", async () => {
   assert.equal(events.filter((event) => event.channel === "chat-success").length, 2)
 })
 
+test("语音面试请求会把完整面试背景注入系统提示词", async () => {
+  const contextPath = path.join(tempRoot, "interview-context.md")
+  fs.writeFileSync(contextPath, "项目经历：PandoraQ 使用 RAG 和 MCP。", "utf8")
+  const { service } = setup({
+    interviewContextEnabled: true,
+    interviewContextPath: contextPath
+  })
+  const session = service.createSession()
+
+  const result = await service.sendMessage(
+    session.id,
+    "以下线上会议双方对话上下文\n面试官：介绍一下你在 PandoraQ 里的 RAG 实践。\n面试者：核心流程是什么？",
+    [],
+    "request-voice-interview"
+  )
+
+  assert.equal(result.success, true)
+  const systemPrompt = openAICalls[0].body.messages[0].content
+  assert.match(systemPrompt, /系统音频转写代表面试官/)
+  assert.match(systemPrompt, /项目经历：PandoraQ 使用 RAG 和 MCP。/)
+})
+
 test("多图片输入会编码全部有效图片并跳过损坏路径", async () => {
   const { service } = setup()
   const session = service.createSession()
@@ -305,6 +330,40 @@ test("多图片输入会编码全部有效图片并跳过损坏路径", async ()
   assert.equal(followUp.success, true)
   const followUpImageMessage = openAICalls.at(-1).body.messages.find((message) => Array.isArray(message.content))
   assert.equal(followUpImageMessage.content.filter((part) => part.type === "image_url").length, 3)
+})
+
+test("消息被接受后只通知消费本轮源截图，并保留聊天记录附件", async () => {
+  const acceptedEvents = []
+  const { service, events } = setup({}, {
+    onMessageAccepted(accepted) {
+      acceptedEvents.push(accepted)
+    }
+  })
+  const session = service.createSession()
+  const firstImage = pngFile("accepted-first.png")
+  const secondImage = pngFile("accepted-second.png")
+
+  const result = await service.sendMessage(
+    session.id,
+    "分析本轮的两张截图",
+    [{ path: firstImage }, { path: secondImage }],
+    "request-accepted-images"
+  )
+
+  assert.equal(result.success, true)
+  assert.equal(acceptedEvents.length, 1)
+  assert.deepEqual(acceptedEvents[0].acceptedImagePaths, [firstImage, secondImage])
+
+  const persistedImages = service.getCurrentSession().messages[0].images
+  assert.equal(persistedImages.length, 2)
+  assert.deepEqual(
+    acceptedEvents[0].persistedImagePaths,
+    persistedImages.map((image) => image.path)
+  )
+  assert.equal(persistedImages.every((image) => image.path !== firstImage && image.path !== secondImage), true)
+
+  const startedEvent = events.find((event) => event.channel === "chat-started")
+  assert.deepEqual(startedEvent.payload.acceptedImagePaths, [firstImage, secondImage])
 })
 
 test("DeepSeek 图片走 Files API，并在后续轮次复用 file_id", async () => {

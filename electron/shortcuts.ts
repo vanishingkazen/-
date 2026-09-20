@@ -197,22 +197,14 @@ export class ShortcutsHelper {
     })
 
     this.registerShortcut("CommandOrControl+Enter", async () => {
-      const rawConversation = this.deps.voiceRecognitionHelper?.getConversationTranscript()
-      const conversation = rawConversation
-        ? await this.deps.processingHelper?.correctVoiceConversation(rawConversation) || rawConversation
-        : undefined
-      const voiceText = [
-        conversation?.systemTranscript ? `用户A（扬声器）：${conversation.systemTranscript}` : "",
-        conversation?.microphoneTranscript ? `用户B（麦克风）：${conversation.microphoneTranscript}` : ""
-      ].filter(Boolean).join("\n")
       const hasScreenshots = this.deps.getView() === "queue"
         ? this.deps.getScreenshotQueue().length > 0
         : this.deps.getExtraScreenshotQueue().length > 0
 
       // Ctrl+Enter is a submit shortcut, not an instruction to create an
-      // empty screenshot job. With no voice text and no queued image it is a
-      // deliberate no-op.
-      if (!voiceText && !hasScreenshots) return
+      // empty screenshot job. Voice context is submitted only through the
+      // explicit UI action in the chat window.
+      if (!hasScreenshots) return
 
       const chatService = this.deps.chatService
       if (!chatService) return
@@ -229,11 +221,10 @@ export class ShortcutsHelper {
       const sessionId = chatService.getCurrentSession().id
       await chatService.sendMessage(
         sessionId,
-        voiceText || "请分析这些截图并回答。",
+        "请分析这些截图并回答。",
         images,
         requestId
       )
-      if (voiceText) this.deps.voiceRecognitionHelper?.clearTranscript()
     })
 
     this.registerShortcut("CommandOrControl+R", () => {
@@ -313,13 +304,6 @@ export class ShortcutsHelper {
       mainWindow.focus()
       mainWindow.webContents.focus()
       mainWindow.webContents.send("focus-chat-input")
-    })
-
-    this.registerShortcut("CommandOrControl+Shift+M", () => {
-      console.log("Command/Ctrl + Shift + M pressed. Toggling voice input.")
-      const mainWindow = this.deps.getMainWindow()
-      if (!mainWindow || mainWindow.isDestroyed()) return
-      mainWindow.webContents.send("toggle-voice-input")
     })
 
     this.registerShortcut("CommandOrControl+Alt+Up", () => {

@@ -197,7 +197,15 @@ function initializeHelpers() {
     PROCESSING_EVENTS: state.PROCESSING_EVENTS
   } as IProcessingHelperDeps)
 
-  state.chatService = new ChatService({ getMainWindow })
+  state.chatService = new ChatService({
+    getMainWindow,
+    onMessageAccepted: ({ acceptedImagePaths, persistedImagePaths }) => {
+      state.screenshotHelper?.consumeScreenshots(
+        acceptedImagePaths,
+        persistedImagePaths
+      )
+    }
+  })
 
   state.shortcutsHelper = new ShortcutsHelper({
     getMainWindow,

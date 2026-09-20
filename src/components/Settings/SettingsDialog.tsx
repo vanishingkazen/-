@@ -812,9 +812,6 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
                 <div className="text-black/65">Process Screenshots</div>
                 <div className="text-black/80 font-mono">{COMMAND_KEY}+Enter</div>
 
-                <div className="text-black/65">Toggle Voice Input</div>
-                <div className="text-black/80 font-mono">{COMMAND_KEY}+Shift+M</div>
-                
                 <div className="text-black/65">Delete Last Screenshot</div>
                 <div className="text-black/80 font-mono">{COMMAND_KEY}+L</div>
                 
@@ -850,7 +847,7 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
               <div>
                 <label className="text-sm font-medium text-black">Qwen Realtime Speech Recognition</label>
                 <p className="text-xs text-black/60">
-                  Optional Alibaba Cloud realtime transcription used by Ctrl+Shift+M.
+                  Optional Alibaba Cloud realtime transcription. Start and stop recording from the chat window.
                 </p>
               </div>
               <div className="space-y-1">

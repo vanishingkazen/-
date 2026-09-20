@@ -1,5 +1,11 @@
 import type { ChatAttachment, ChatMessage, ChatSession, ChatSessionSeed } from "./chat"
 
+export interface VoiceConversationTurn {
+  speaker: "interviewer" | "candidate"
+  text: string
+  completedAt: number
+}
+
 export interface ElectronAPI {
   updateContentDimensions: (dimensions: { width: number; height: number }) => Promise<void>
   getScreenshots: () => Promise<unknown>
@@ -16,6 +22,7 @@ export interface ElectronAPI {
     sessionId: string
     requestId: string
     userMessage: ChatMessage
+    acceptedImagePaths?: string[]
   }) => void) => () => void
   onChatStream: (callback: (data: {
     requestId: string
@@ -64,20 +71,22 @@ export interface ElectronAPI {
     microphoneTranscript: string
     rawMicrophoneTranscript: string
     removedSegments: number
+    turns: VoiceConversationTurn[]
   }>
   correctVoiceConversation: (conversation: {
     systemTranscript: string
     microphoneTranscript: string
     rawMicrophoneTranscript: string
     removedSegments: number
+    turns: VoiceConversationTurn[]
   }) => Promise<{
     systemTranscript: string
     microphoneTranscript: string
     rawMicrophoneTranscript: string
     removedSegments: number
+    turns: VoiceConversationTurn[]
     corrected: boolean
   }>
-  onToggleVoiceInput: (callback: () => void) => () => void
   onVoiceStatus: (callback: (data: {
     source: "microphone" | "system"
     state: string
@@ -88,9 +97,9 @@ export interface ElectronAPI {
     source: "microphone" | "system"
     text: string
     fullText: string
+    completedAt: number
   }) => void) => () => void
   onVoiceContextCleared: (callback: (data: { source: "microphone" | "system" }) => void) => () => void
-  onVoiceSubmit: (callback: (data: { requestId: string; text: string }) => void) => () => void
 
   getInterviewContextStatus: () => Promise<{
     enabled: boolean

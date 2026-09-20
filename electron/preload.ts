@@ -93,7 +93,12 @@ const electronAPI = {
     return () => ipcRenderer.removeListener("language-detected", subscription)
   },
   onChatStarted: (
-    callback: (data: { sessionId: string; requestId: string; userMessage: any }) => void
+    callback: (data: {
+      sessionId: string
+      requestId: string
+      userMessage: any
+      acceptedImagePaths?: string[]
+    }) => void
   ) => {
     const subscription = (_: any, data: any) => callback(data)
     ipcRenderer.on("chat-started", subscription)
@@ -156,17 +161,20 @@ const electronAPI = {
     microphoneTranscript: string;
     rawMicrophoneTranscript: string;
     removedSegments: number;
+    turns: Array<{ speaker: "interviewer" | "candidate"; text: string; completedAt: number }>;
   }> => ipcRenderer.invoke("voice-conversation"),
   correctVoiceConversation: (conversation: {
     systemTranscript: string;
     microphoneTranscript: string;
     rawMicrophoneTranscript: string;
     removedSegments: number;
+    turns: Array<{ speaker: "interviewer" | "candidate"; text: string; completedAt: number }>;
   }): Promise<{
     systemTranscript: string;
     microphoneTranscript: string;
     rawMicrophoneTranscript: string;
     removedSegments: number;
+    turns: Array<{ speaker: "interviewer" | "candidate"; text: string; completedAt: number }>;
     corrected: boolean;
   }> => ipcRenderer.invoke("voice-correct-conversation", conversation),
   getInterviewContextStatus: (): Promise<{
@@ -184,11 +192,6 @@ const electronAPI = {
     characterCount: number;
     error?: string;
   }> => ipcRenderer.invoke("interview-context-set-enabled", enabled),
-  onToggleVoiceInput: (callback: () => void) => {
-    const subscription = () => callback()
-    ipcRenderer.on("toggle-voice-input", subscription)
-    return () => ipcRenderer.removeListener("toggle-voice-input", subscription)
-  },
   onVoiceStatus: (callback: (data: { source: "microphone" | "system"; state: string; message: string }) => void) => {
     const subscription = (_event: unknown, data: { source: "microphone" | "system"; state: string; message: string }) => callback(data)
     ipcRenderer.on("voice-status", subscription)
@@ -199,8 +202,8 @@ const electronAPI = {
     ipcRenderer.on("voice-transcript-partial", subscription)
     return () => ipcRenderer.removeListener("voice-transcript-partial", subscription)
   },
-  onVoiceFinal: (callback: (data: { source: "microphone" | "system"; text: string; fullText: string }) => void) => {
-    const subscription = (_event: unknown, data: { source: "microphone" | "system"; text: string; fullText: string }) => callback(data)
+  onVoiceFinal: (callback: (data: { source: "microphone" | "system"; text: string; fullText: string; completedAt: number }) => void) => {
+    const subscription = (_event: unknown, data: { source: "microphone" | "system"; text: string; fullText: string; completedAt: number }) => callback(data)
     ipcRenderer.on("voice-transcript-final", subscription)
     return () => ipcRenderer.removeListener("voice-transcript-final", subscription)
   },
@@ -208,11 +211,6 @@ const electronAPI = {
     const subscription = (_event: unknown, data: { source: "microphone" | "system" }) => callback(data)
     ipcRenderer.on("voice-context-cleared", subscription)
     return () => ipcRenderer.removeListener("voice-context-cleared", subscription)
-  },
-  onVoiceSubmit: (callback: (data: { requestId: string; text: string }) => void) => {
-    const subscription = (_event: unknown, data: { requestId: string; text: string }) => callback(data)
-    ipcRenderer.on("voice-submit", subscription)
-    return () => ipcRenderer.removeListener("voice-submit", subscription)
   },
   triggerReset: () => ipcRenderer.invoke("trigger-reset"),
 

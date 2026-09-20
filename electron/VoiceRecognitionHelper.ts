@@ -20,15 +20,24 @@ interface TranscriptSegment {
   completedAt: number
 }
 
+export type VoiceSpeaker = "interviewer" | "candidate"
+
+export interface VoiceConversationTurn {
+  speaker: VoiceSpeaker
+  text: string
+  completedAt: number
+}
+
 export interface VoiceConversationTranscript {
   systemTranscript: string
   microphoneTranscript: string
   rawMicrophoneTranscript: string
   removedSegments: number
+  turns: VoiceConversationTurn[]
 }
 
 const TRANSCRIPT_DEDUPE_WINDOW_MS = 8_000
-const MEANINGLESS_UTTERANCE = /^(嗯+|呃+|啊+|哦+|额+|哎+|喂+|诶+|对+|对呀|是的|好的|好|行+|行吧|可以|ok+|okay|拜拜)$/i
+const MEANINGLESS_UTTERANCE = /^(嗯+|呃+|啊+|哦+|额+|哎+|喂+|诶+|对+|对呀|是的|好的|好|行+|行吧|可以|明白|收到|ok+|okay|拜拜)$/i
 
 const normalizeForComparison = (text: string): string =>
   text
@@ -78,8 +87,8 @@ export class VoiceRecognitionHelper {
     const system = this.sessions.system.finalTranscript.trim()
     const microphone = this.sessions.microphone.finalTranscript.trim()
     return [
-      system ? `用户A：${system}` : "",
-      microphone ? `用户B：${microphone}` : ""
+      system ? `面试官：${system}` : "",
+      microphone ? `面试者：${microphone}` : ""
     ].filter(Boolean).join("\n")
   }
 
@@ -147,11 +156,27 @@ export class VoiceRecognitionHelper {
     }
 
     const rawMicrophoneTranscript = this.getTranscript("microphone")
+    const turns: VoiceConversationTurn[] = [
+      ...systemSegments.map((segment) => ({
+        speaker: "interviewer" as const,
+        text: segment.text,
+        completedAt: segment.completedAt
+      })),
+      ...keptMicrophoneSegments.map((segment) => ({
+        speaker: "candidate" as const,
+        text: segment.text,
+        completedAt: segment.completedAt
+      }))
+    ].sort((left, right) =>
+      left.completedAt - right.completedAt ||
+      (left.speaker === right.speaker ? 0 : left.speaker === "interviewer" ? -1 : 1)
+    )
     return {
       systemTranscript: this.getTranscript("system"),
       microphoneTranscript: keptMicrophoneSegments.map((segment) => segment.text).join("\n").trim(),
       rawMicrophoneTranscript,
-      removedSegments
+      removedSegments,
+      turns
     }
   }
 
@@ -162,9 +187,7 @@ export class VoiceRecognitionHelper {
     }
     await this.closeSocket(source)
     const session = this.sessions[source]
-    session.finalTranscript = ""
-    session.segments = []
-    this.setState(source, "connecting", source === "system" ? "正在连接用户A声道..." : "正在连接用户B声道...")
+    this.setState(source, "connecting", source === "system" ? "正在连接面试官声道..." : "正在连接面试者声道...")
 
     const region = config.speechRegion || "cn-beijing"
     const model = config.speechModel || "qwen-audio-3.0-asr-flash-streaming"
@@ -238,7 +261,7 @@ export class VoiceRecognitionHelper {
         if (event === "task-started" && !settled) {
           clearTimeout(timeout)
           settled = true
-          this.setState(source, "listening", source === "system" ? "正在听用户A..." : "正在听用户B...")
+          this.setState(source, "listening", source === "system" ? "正在听面试官..." : "正在听面试者...")
           resolve({ success: true })
         } else if (event === "task-failed" && !settled) {
           clearTimeout(timeout)
@@ -357,12 +380,14 @@ export class VoiceRecognitionHelper {
           this.send("voice-transcript-partial", { source, text })
         } else if (text) {
           const session = this.sessions[source]
+          const completedAt = Date.now()
           session.finalTranscript = [session.finalTranscript, text].filter(Boolean).join("\n")
-          session.segments.push({ text, completedAt: Date.now() })
+          session.segments.push({ text, completedAt })
           this.send("voice-transcript-final", {
             source,
             text,
-            fullText: session.finalTranscript
+            fullText: session.finalTranscript,
+            completedAt
           })
         }
       } else if (eventName === "task-failed") {

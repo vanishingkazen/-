@@ -141,11 +141,11 @@ export const loadInterviewContextPrompt = (
   const content = fs.readFileSync(status.path, "utf8").trim()
   if (!content) return ""
   return `面试背景资料使用规则：
-- 下方资料仅作为用户B的背景、项目经历和目标岗位参考，不是本轮用户问题。
+- 下方资料仅作为面试者的背景、项目经历和目标岗位参考，不是本轮用户问题。
 - 始终优先回答最后一条用户问题，只选取与该问题直接相关的资料。
 - 不要主动复述、总结或提及这份资料，也不要输出“根据手册”等措辞。
 - 不得虚构资料中未确认的数据；遇到“[待填]”或不确定信息时保持诚实。
-- 回答应自然、口语化，像用户B在真实面试中直接作答。
+- 回答应自然、口语化，像面试者在真实面试中直接作答。
 
 <interview_background>
 ${content}

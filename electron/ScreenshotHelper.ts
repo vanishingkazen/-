@@ -159,6 +159,41 @@ export class ScreenshotHelper {
     this.extraScreenshotQueue = [];
   }
 
+  /**
+   * 从待发送队列中消费已经提交到聊天记录的截图。
+   * 只处理本次实际发送的路径，避免影响发送期间新截取的图片。
+   * 如果聊天记录因复制失败仍引用原文件，则保留磁盘文件，仅移出队列。
+   */
+  public consumeScreenshots(paths: string[], keepPaths: string[] = []): void {
+    const consumedPaths = new Set(paths.filter(Boolean));
+    if (consumedPaths.size === 0) return;
+
+    const queuedPaths = new Set([
+      ...this.screenshotQueue,
+      ...this.extraScreenshotQueue
+    ]);
+    const retainedPaths = new Set(keepPaths.filter(Boolean));
+    this.screenshotQueue = this.screenshotQueue.filter(
+      (screenshotPath) => !consumedPaths.has(screenshotPath)
+    );
+    this.extraScreenshotQueue = this.extraScreenshotQueue.filter(
+      (screenshotPath) => !consumedPaths.has(screenshotPath)
+    );
+
+    for (const screenshotPath of consumedPaths) {
+      if (!queuedPaths.has(screenshotPath)) continue;
+      if (retainedPaths.has(screenshotPath)) continue;
+      try {
+        fs.rmSync(screenshotPath, { force: true });
+      } catch (error) {
+        console.error(
+          `Error deleting consumed screenshot at ${screenshotPath}:`,
+          error
+        );
+      }
+    }
+  }
+
   private async captureScreenshot(): Promise<Buffer> {
     try {
       console.log("Starting screenshot capture...");

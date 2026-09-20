@@ -1,6 +1,6 @@
 # 实时语音识别（ASR）接入文档
 
-本文档描述本项目内置的“实时语音识别”功能所对接的语音服务：**阿里云百炼 DashScope 实时语音识别 WebSocket API（双工 streaming）**。语音功能由快捷键 `Ctrl/Cmd + Shift + M` 触发，在设置页（`Qwen Realtime Speech Recognition`）中配置。
+本文档描述本项目内置的“实时语音识别”功能所对接的语音服务：**阿里云百炼 DashScope 实时语音识别 WebSocket API（双工 streaming）**。语音采集只能通过聊天窗口中的 UI 按钮开始或停止，在设置页（`Qwen Realtime Speech Recognition`）中配置。
 
 > 说明：文档中的接入格式与报文示例，均以本仓库实际代码为准，核心实现在 `electron/VoiceRecognitionHelper.ts`。
 
@@ -211,20 +211,21 @@ socket.send(pcmBytes, { binary: true })
 | `electron/VoiceRecognitionHelper.ts` | WebSocket 建连、`run-task`/`finish-task`、音频转发、结果解析 |
 | `electron/ipcHandlers.ts` | `voice-start` / `voice-audio` / `voice-stop` / `voice-clear` 等 IPC |
 | `electron/preload.ts` | 向渲染进程暴露 `startVoiceRecognition` / `sendVoiceAudio` 等 API |
-| `electron/shortcuts.ts` | `Ctrl/Cmd + Shift + M` 触发语音；`Ctrl/Cmd + Enter` 提交语音消息 |
-| `src/_pages/Chat.tsx` | 采集扬声器（用户A）+ 麦克风（用户B）音频并重采样为 16kHz PCM |
+| `electron/ChatService.ts` | 接收显式发送的语音上下文，注入面试官/面试者角色提示和完整面试背景资料 |
+| `electron/shortcuts.ts` | 不再注册语音开关快捷键；`Ctrl/Cmd + Enter` 只保留截图提交流程 |
+| `src/_pages/Chat.tsx` | 通过 UI 采集系统音频（面试官）+ 麦克风（面试者），重采样为 16kHz PCM，并维护待发送对话队列 |
 | `src/components/Settings/SettingsDialog.tsx` | 语音服务设置表单 |
 
 ### 8.3 双声道说明
 
-- `system` 源：系统扬声器音频（`getDisplayMedia`），对应“用户A”；
-- `microphone` 源：麦克风（`getUserMedia`），对应“用户B”。
+- `system` 源：系统扬声器音频（`getDisplayMedia`），对应“面试官”；
+- `microphone` 源：麦克风（`getUserMedia`），对应“面试者”。
 
-两路各自维护独立 WebSocket 会话与转写，`Ctrl/Cmd + Enter` 提交时合并为：
+两路各自维护独立 WebSocket 会话与转写，并按完成时间合并为有顺序的待发送队列。停止录音不会自动生成回答，用户需要在 UI 中显式点击“发送给 AI”。发送时会整理为：
 
 ```text
-用户A（扬声器）：...
-用户B（麦克风）：...
+面试官：...
+面试者：...
 ```
 
 ## 9. 注意事项

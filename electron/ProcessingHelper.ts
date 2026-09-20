@@ -7,7 +7,7 @@ import { BrowserWindow } from "electron"
 import { OpenAI } from "openai"
 import { configHelper } from "./ConfigHelper"
 import { loadInterviewAsrEnhancement, loadInterviewContextPrompt } from "./InterviewContextHelper"
-import type { VoiceConversationTranscript } from "./VoiceRecognitionHelper"
+import type { VoiceConversationTranscript, VoiceConversationTurn } from "./VoiceRecognitionHelper"
 import Anthropic from '@anthropic-ai/sdk';
 
 interface GeminiResponse {
@@ -987,7 +987,12 @@ ${basicCodeForDebugging}
     conversation: VoiceConversationTranscript
   ): Promise<VoiceConversationTranscript & { corrected: boolean }> {
     const original = { ...conversation, corrected: false }
-    if (!conversation.systemTranscript.trim() && !conversation.microphoneTranscript.trim()) {
+    const turns = Array.isArray(conversation.turns) ? conversation.turns : []
+    if (
+      !turns.length &&
+      !conversation.systemTranscript.trim() &&
+      !conversation.microphoneTranscript.trim()
+    ) {
       return original
     }
 
@@ -999,12 +1004,30 @@ ${basicCodeForDebugging}
       config.interviewContextEnabled,
       config.interviewContextPath
     )
-    const correctionPrompt = `请校正下面的实时语音识别文本。
+    const correctionPrompt = turns.length
+      ? `请校正下面的线上会议实时语音识别对话。
+
+规则：
+- 只修正同音错字、中英文技术术语、大小写、标点和明显错误断句。
+- 必须保持原意、角色、发言顺序和提问内容，禁止回答问题，禁止补充原文没有的信息。
+- speaker 为 interviewer 的是面试官，speaker 为 candidate 的是面试者。不得交换或合并角色。
+- 只返回严格 JSON：{"turns":[{"index":0,"text":"校正后的文本"}]}，index 必须与输入一致，不得增删轮次。
+${enhancement.contextText ? `- 领域术语参考：${enhancement.contextText}` : "- 场景是 Agent 工程师技术面试，注意常见中英文技术术语。"}
+
+原始识别：
+${JSON.stringify({
+  turns: turns.map((turn: VoiceConversationTurn, index: number) => ({
+    index,
+    speaker: turn.speaker,
+    text: turn.text
+  }))
+})}`
+      : `请校正下面的实时语音识别文本。
 
 规则：
 - 只修正同音错字、中英文技术术语、大小写、标点和明显错误断句。
 - 必须保持原意、角色和提问内容，禁止回答问题，禁止补充原文没有的信息。
-- 这是双声道面试录音：用户A来自电脑扬声器，是提问方；用户B来自麦克风，是回答方。保持两人的声道归属，只校正文本，不要交换或合并角色。
+- 这是双声道面试录音：面试官来自系统音频，面试者来自麦克风。保持角色归属，只校正文本，不要交换或合并角色。
 - 只返回严格 JSON：{"systemTranscript":"...","microphoneTranscript":"..."}。
 ${enhancement.contextText ? `- 领域术语参考：${enhancement.contextText}` : "- 场景是 Agent 工程师技术面试，注意常见中英文技术术语。"}
 
@@ -1039,6 +1062,33 @@ ${JSON.stringify({
       const parsed = JSON.parse(raw.replace(/```json|```/gi, "").trim()) as {
         systemTranscript?: unknown
         microphoneTranscript?: unknown
+        turns?: Array<{ index?: unknown; text?: unknown }>
+      }
+      if (turns.length) {
+        const correctedTurns = turns.map((turn, index) => {
+          const corrected = parsed.turns?.find((item) => item.index === index)
+          return {
+            ...turn,
+            text: typeof corrected?.text === "string" && corrected.text.trim()
+              ? corrected.text.trim()
+              : turn.text
+          }
+        })
+        return {
+          ...conversation,
+          systemTranscript: correctedTurns
+            .filter((turn) => turn.speaker === "interviewer")
+            .map((turn) => turn.text)
+            .join("\n")
+            .trim(),
+          microphoneTranscript: correctedTurns
+            .filter((turn) => turn.speaker === "candidate")
+            .map((turn) => turn.text)
+            .join("\n")
+            .trim(),
+          turns: correctedTurns,
+          corrected: true
+        }
       }
       return {
         ...conversation,
@@ -1084,19 +1134,19 @@ ${JSON.stringify({
       }
     }
     const isVoiceInterviewRequest =
-      content.includes("用户A：") ||
-      content.includes("用户B：") ||
-      content.includes("用户A（扬声器）") ||
-      content.includes("用户B（麦克风）") ||
+      content.includes("面试官：") ||
+      content.includes("面试者：") ||
+      content.includes("面试官（系统音频）") ||
+      content.includes("面试者（麦克风）") ||
       content.includes("面试现场可以直接说出口")
     const voiceInterviewStylePrompt = isVoiceInterviewRequest
-      ? `这是双声道实时面试语音回答：用户A来自电脑扬声器，是提问方；用户B来自麦克风，是回答方，我们需要以用户B的身份作答。输出必须像用户B现场直接开口说话：
-- 两个声道的转写可能包含寒暄、口头禅、重复、插话、没说完的半句话和识别错字，但不要交换用户A和用户B的归属。
-- 不要逐句回应，也不要把每句话都当成问题。先结合整段对话，挖掘用户A最近真正向用户B提出、且尚未解决的核心问题；用户B已经说过的话主要作为理解追问和补充回答的上下文。
+      ? `这是线上会议双声道实时面试语音回答：面试官来自系统音频，是提问方；面试者来自麦克风，是回答方，我们需要以面试者的身份作答。输出必须像面试者现场直接开口说话：
+- 两个声道的转写可能包含寒暄、口头禅、重复、插话、没说完的半句话和识别错字，但不要交换面试官和面试者的归属。
+- 不要逐句回应，也不要把每句话都当成问题。先结合整段对话，挖掘面试官最近真正向面试者提出、且尚未解决的核心问题；面试者已经说过的话主要作为理解追问和补充回答的上下文。
 - 忽略与核心问题无关的杂音和交流。如果问题被停顿或插话拆开，要在理解后合并；“为什么”“具体呢”“然后呢”等短追问要结合前文还原含义。
-- 如果没有识别出用户A的明确问题，但用户B明确向 AI 提问，则回答用户B最后提出的问题。除非整段内容确实无法识别出任何问题，否则不要反问用户，也不要复述原始转写。
+- 如果没有识别出面试官的明确问题，但面试者明确向 AI 提问，则回答面试者最后提出的问题。除非整段内容确实无法识别出任何问题，否则不要反问用户，也不要复述原始转写。
 - 使用大白话，先给结论，再用一个简单例子或关键点说明。
-- 若面试背景资料中存在与问题相关的真实项目经历，优先用用户B的第一人称结合项目回答，例如“在我们 PandoraQ 项目里……”，把通用原理落到项目做法上；资料未提供的信息不得编造。
+- 若面试背景资料中存在与问题相关的真实项目经历，优先用面试者的第一人称结合项目回答，例如“在我们 PandoraQ 项目里……”，把通用原理落到项目做法上；资料未提供的信息不得编造。
 - 默认只输出一个短段落，3～6句话，约20～40秒可以说完。
 - 禁止 Markdown 标题、加粗、编号、项目符号、ASCII 图和长篇教程。
 - 不要以“好的”“当然”“我分几层讲”开头，不主动解释英文全称。
