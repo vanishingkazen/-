@@ -30,6 +30,11 @@ export interface ElectronAPI {
     content: string
     done: boolean
   }) => void) => () => void
+  onChatThinking: (callback: (data: {
+    requestId: string
+    sessionId: string
+    reasoningChars: number
+  }) => void) => () => void
   onChatContextCompressed: (callback: (data: { sessionId: string; summary: string }) => void) => () => void
   onChatSuccess: (callback: (data: {
     requestId: string

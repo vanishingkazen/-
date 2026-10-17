@@ -749,6 +749,12 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
       window.electronAPI.onChatStream((data) => {
         if (data.sessionId !== sessionIdRef.current || activeAssistantId.current !== data.requestId) return
         updateAssistant(data.requestId, data.content, !data.done)
+        // 正文开始输出后撤掉「思考中…」提示，避免和正文同时占据界面。
+        if (data.content) setPhase("")
+      }),
+      window.electronAPI.onChatThinking((data) => {
+        if (data.sessionId !== sessionIdRef.current || activeAssistantId.current !== data.requestId) return
+        setPhase(`模型思考中…（已思考 ${data.reasoningChars} 字）`)
       }),
       window.electronAPI.onChatSuccess((data) => {
         if (data.sessionId !== sessionIdRef.current || activeAssistantId.current !== data.requestId) return

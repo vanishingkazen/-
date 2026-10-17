@@ -14,6 +14,7 @@ steamgamecode 是一个面向技术面试和题目解答场景的 macOS 桌面�
 - macOS 支持原生 Command 事件拦截
 - 应用窗口默认启用内容保护，降低被屏幕录制或截图捕获的风险
 - 渲染进程或主进程异常退出时自动恢复，避免频繁崩溃导致应用不可用
+- 每次模型调用写入结构化日志（含 `finish_reason` 与思考 token 用量），便于定位空回复和截断
 
 ## 运行环境
 
@@ -268,6 +269,77 @@ Linux:   ~/.local/state/steamgamecode/logs/startup.log
 - 设置面板中的「运行日志 → 打开日志目录」可以直接打开日志文件所在目录。
 - 需要自定义日志目录时，设置环境变量 `STEAMGAMECODE_LOG_DIR`（例如 `STEAMGAMECODE_LOG_DIR=./logs npm run dev`）。
 
+### 模型 API 调用日志
+
+每次向模型服务发起请求，都会在 `main.log` 中留下以 `[api]` 开头的结构化记录，用来回答「这次调用到底发生了什么」。排查「等了很久返回空白」「token 花在哪了」「图片到底有没有传上去」时，先看这里。
+
+一次调用至少两行，用调用 ID（如 `#0003`）配对：
+
+```text
+[api] -> #0003 请求 kind=chat provider=openai-compatible model=deepseek-flash stream=true max_tokens=65536 temperature=0.2 messages=2 images=1 host=api.deepseek.com
+[api] <- #0003 响应 kind=chat model=deepseek-flash dur=14.5s stream=true chunks=3671 ttft=566ms first_content=6.7s finish=stop usage={prompt=1173,completion=3678,reasoning=1566,cached=0,total=4851} reasoning_chars=4013 content_chars=5223 preview="这个界面是 macOS 上运行的 VS Code…"
+```
+
+字段说明：
+
+| 字段 | 含义 |
+| --- | --- |
+| `kind` | 调用场景：`chat`（对话/截图解题）、`summary`（上下文压缩）、`vision`（视觉直接解题）、`debug`（调试截图）、`followup`（追问）、`voice-correction`（语音纠错）、`file-upload` / `file-delete`（DeepSeek Files API） |
+| `provider` / `model` / `host` | Provider、模型名和接口域名（只记录 host，不记录可能含密钥的完整 URL） |
+| `stream` / `chunks` | 是否流式，以及收到的增量包数量 |
+| `dur` | 请求总耗时 |
+| `ttft` | 首个 token（含思考）到达时间 |
+| `first_content` | 第一段正文到达时间；它和 `ttft` 的差值就是「模型只在思考、界面无输出」的时长 |
+| `finish` | 服务端结束原因：`stop` 正常结束、`length` 被输出上限截断，其他取值由服务端定义 |
+| `usage` | `prompt` 输入 token、`completion` 输出 token、`reasoning` 思考 token、`cached` 命中缓存的输入 token |
+| `reasoning_chars` / `content_chars` | 思考链与正文的字符数 |
+| `preview` | 正文前 240 字符（换行已折叠） |
+
+告警行以 `[api] !!` 开头：
+
+| 告警 | 触发条件 | 处理建议 |
+| --- | --- | --- |
+| `空正文：finish_reason=length` | 思考 token 吃光输出预算，正文被截断 | 提高设置里的「最大输出长度」，或改用非推理模型 |
+| `空正文` | 其他 `finish_reason` 但正文为空 | 检查模型能力、提示词或服务端返回 |
+| `正文被截断` | 有正文，但 `finish_reason=length` | 同上 |
+| `思考接近输出上限` | `reasoning` 达到 `max_tokens` 的 85% | 提前提高上限，避免下次直接截断 |
+| `失败` | 网络错误、鉴权失败、限流等 | 看 `error=` 后面的错误名和信息 |
+| `已取消` | 用户主动取消或重置（`Cmd+R`） | 属于正常操作，无需处理 |
+
+> **推理模型的 `max_tokens` 同时覆盖思考链和正文。** 思考占满预算时，正文长度为 0 且 `finish_reason=length`，界面上就表现为「等很久之后返回空白」。遇到这种情况，先确认 `usage` 里的 `reasoning` 是否已经等于 `max_tokens`。
+
+应用退出时会追加一行本次运行的累计统计：
+
+```text
+[api] == 本次运行调用统计 calls=37 ok=33 failed=3 aborted=1 empty_replies=2 truncated=2 usage_calls=35 prompt_tokens=19234 completion_tokens=310442 reasoning_tokens=298112 reasoning_ratio=96%
+```
+
+常用排查命令：
+
+```bash
+# 最近 50 次模型调用
+grep "\[api\]" ~/Library/Logs/steamgamecode/main.log | tail -50
+
+# 只看异常（空正文、截断、失败、取消）
+grep "\[api\] !!" ~/Library/Logs/steamgamecode/main.log
+
+# 只看「思考吃光预算、正文为空」的调用
+grep "\[api\] !!" ~/Library/Logs/steamgamecode/main.log | grep "空正文"
+```
+
+这些日志由 `electron/ApiTelemetry.ts` 统一生成，所有模型调用点均已接入：`ChatProvider`、`ProcessingVisionService`、`ProcessingDebugService`、`ProcessingFollowupService`、`ProcessingVoiceCorrectionService`、`DeepSeekFilesApi`。使用官方 DeepSeek 接口时，流式请求会自动开启 `stream_options.include_usage`，因此流式响应同样能拿到 `usage` 和 `reasoning` 用量。
+
+如果不想在真实使用中等待问题复现，可以运行在线冒烟脚本，它会依次跑「正常调用 / 截断空正文 / 用户取消 / 鉴权失败」四个场景并校验日志内容：
+
+```bash
+npm run test:api-log
+
+# 默认写临时目录，不污染正式日志；指定后可直接写进日常日志目录
+STEAMGAMECODE_LOG_DIR=~/Library/Logs/steamgamecode npm run test:api-log
+```
+
+该脚本读取 `~/Library/Application Support/steamgamecode/config.json` 中的真实配置，会发起少量真实请求。
+
 ## 数据目录
 
 配置：
@@ -328,6 +400,7 @@ electron/
   ConfigHelper.ts                 配置读写和迁移
   CrashRecovery.ts                 崩溃恢复和自动重启
   logger.ts                       日志初始化、启动索引和前端日志落盘
+  ApiTelemetry.ts                 模型调用遥测、usage 统计和异常告警
 
 native/
   mac-command-interceptor/        macOS CGEventTap 原生模块
@@ -358,6 +431,22 @@ npm run build
 本次重构不改变 macOS Command 事件拦截的隐私不变量；原生拦截算法和其 Electron 封装仍需按原有边界维护。
 
 ## 常见问题
+
+### 对话等很久后返回空白
+
+先用日志确认原因：
+
+```bash
+grep "\[api\] !!" ~/Library/Logs/steamgamecode/main.log | tail -5
+```
+
+如果出现 `空正文：finish_reason=length，思考占用 …/… 输出 token`，说明输出预算已经被思考链占满，正文被截断（详见[模型 API 调用日志](#模型-api-调用日志)）。处理方式：
+
+1. 在设置里把「最大输出长度」从默认 `32768` 提高到 `65536`；
+2. 或改用非推理模型；
+3. 直接重试通常也能成功——思考长度是波动的，同一道题不一定每次都跑满。
+
+如果日志里连 `[api]` 行都没有，说明请求没有真正发出，需要检查快捷键、截图队列和渲染进程日志。
 
 ### 修改 API 后没有生效
 

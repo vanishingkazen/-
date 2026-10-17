@@ -2,6 +2,7 @@ import type { BrowserWindow } from "electron"
 import { configHelper, type Config } from "./ConfigHelper"
 import type { ProblemInfo } from "./contracts"
 import type { ProcessingAIClientManager } from "./ProcessingAIClientManager"
+import { withApiCall } from "./ApiTelemetry"
 
 function errorMessageFrom(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback
@@ -157,12 +158,37 @@ ${basicCodeForDebugging}
           });
         }
 
-        const debugResponse = await this.openaiClient.chat.completions.create({
-          model: config.debuggingModel || "gpt-4o",
-          messages: messages,
-          max_tokens: this.getMaxOutputTokens(config),
-          temperature: 0.2
-        });
+        const debugResponse = await withApiCall(
+          {
+            kind: "debug",
+            provider: config.apiProvider,
+            model: config.debuggingModel || "gpt-4o",
+            baseURL: config.baseURL,
+            stream: false,
+            maxTokens: this.getMaxOutputTokens(config),
+            temperature: 0.2,
+            messageCount: messages.length,
+            imageCount: imageDataList.length
+          },
+          async () =>
+            this.openaiClient!.chat.completions.create({
+              model: config.debuggingModel || "gpt-4o",
+              messages: messages,
+              max_tokens: this.getMaxOutputTokens(config),
+              temperature: 0.2
+            }),
+          (response) => {
+            const message = response.choices?.[0]?.message as
+              | { content?: string | null; reasoning_content?: string | null }
+              | undefined;
+            return {
+              content: message?.content || "",
+              reasoningContent: message?.reasoning_content || "",
+              finishReason: response.choices?.[0]?.finish_reason ?? null,
+              usage: (response as { usage?: unknown }).usage
+            };
+          }
+        );
         
         const debugMessage = debugResponse.choices[0]?.message as {
           content: string | null;
@@ -212,12 +238,33 @@ ${basicCodeForDebugging}
             });
           }
 
-          const response = await this.anthropicClient.messages.create({
-            model: config.debuggingModel || "claude-3-7-sonnet-20250219",
-            max_tokens: this.getMaxOutputTokens(config),
-            messages: messages,
-            temperature: 0.2
-          });
+          const response = await withApiCall(
+            {
+              kind: "debug",
+              provider: config.apiProvider,
+              model: config.debuggingModel || "claude-3-7-sonnet-20250219",
+              stream: false,
+              maxTokens: this.getMaxOutputTokens(config),
+              temperature: 0.2,
+              messageCount: messages.length,
+              imageCount: imageDataList.length
+            },
+            async () =>
+              this.anthropicClient!.messages.create({
+                model: config.debuggingModel || "claude-3-7-sonnet-20250219",
+                max_tokens: this.getMaxOutputTokens(config),
+                messages: messages,
+                temperature: 0.2
+              }),
+            (response) => ({
+              content: response.content
+                .filter((block) => block.type === "text")
+                .map((block) => (block.type === "text" ? block.text : ""))
+                .join("\n"),
+              finishReason: (response as { stop_reason?: string | null }).stop_reason ?? null,
+              usage: (response as { usage?: unknown }).usage
+            })
+          );
           
           const textBlock = response.content.find((block) => block.type === "text")
           debugContent = textBlock?.type === "text" ? textBlock.text : "";

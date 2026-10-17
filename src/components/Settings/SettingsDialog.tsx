@@ -114,7 +114,7 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
   const [solutionModel, setSolutionModel] = useState("gpt-4o");
   const [debuggingModel, setDebuggingModel] = useState("gpt-4o");
   const [streamingEnabled, setStreamingEnabled] = useState(true);
-  const [maxOutputTokens, setMaxOutputTokens] = useState(32768);
+  const [maxOutputTokens, setMaxOutputTokens] = useState(65536);
   const [contextMessageLimit, setContextMessageLimit] = useState(30);
   const [contextWindowTokens, setContextWindowTokens] = useState(128000);
   const [opacity, setOpacity] = useState(1);
@@ -184,7 +184,7 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
           setSolutionModel(config.solutionModel || "gpt-4o");
           setDebuggingModel(config.debuggingModel || "gpt-4o");
           setStreamingEnabled(config.streamingEnabled !== false);
-          setMaxOutputTokens(config.maxOutputTokens || 32768);
+          setMaxOutputTokens(config.maxOutputTokens || 65536);
           setContextMessageLimit(config.contextMessageLimit || 30);
           setContextWindowTokens(config.contextWindowTokens || 128000);
           const loadedOpacity = Math.min(1, Math.max(0.1, config.opacity ?? 1));

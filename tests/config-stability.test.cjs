@@ -66,7 +66,7 @@ test("损坏的 config.json 不阻塞启动，后续更新会恢复为可解析�
   const helper = new ConfigHelper()
   const defaults = helper.loadConfig()
   assert.equal(defaults.apiProvider, "openai-compatible")
-  assert.equal(defaults.maxOutputTokens, 32768)
+  assert.equal(defaults.maxOutputTokens, 65536)
 
   helper.updateConfig({
     apiProvider: "openai-compatible",
@@ -109,7 +109,7 @@ test("无效 provider、模型和历史语言设置会被安全归一化", () =>
   assert.equal(config.extractionModel, "gpt-4o")
   assert.equal(config.solutionModel, "gpt-4o")
   assert.equal(config.debuggingModel, "gpt-4o")
-  assert.equal(config.maxOutputTokens, 32768)
+  assert.equal(config.maxOutputTokens, 65536)
   assert.equal(config.contextMessageLimit, 4)
   assert.equal(config.contextWindowTokens, 128000)
   assert.equal(config.language, "auto")

@@ -859,3 +859,75 @@ test("单条超长消息也会在发送给模型前截断而不破坏本地会�
   assert.equal(requestContent.length < longText.length, true)
   assert.match(requestContent, /内容过长，已截断/)
 })
+
+test("1000 个流式增量按序广播且不丢失、不重复或改变最终文本", async () => {
+  const { service, events } = setup({ streamingEnabled: true })
+  const session = service.createSession()
+  const chunks = Array.from({ length: 1000 }, (_, index) => `第${index + 1}段；`)
+  const expected = chunks.join("")
+
+  openAIResponder = async (body) => {
+    assert.equal(body.stream, true)
+    return (async function* streamReply() {
+      for (const chunk of chunks) {
+        yield streamChunk(chunk)
+      }
+    })()
+  }
+
+  const result = await service.sendMessage(session.id, "执行长流式回答", [], "request-1000-chunks")
+
+  assert.equal(result.success, true)
+  assert.equal(result.content, expected)
+  const streamEvents = events.filter((event) => event.channel === "chat-stream")
+  assert.equal(streamEvents.length, chunks.length)
+  assert.equal(streamEvents.every((event) => event.payload.done === false), true)
+  assert.equal(streamEvents[0].payload.content, chunks[0])
+  assert.equal(streamEvents.at(-1).payload.content, expected)
+  assert.equal(events.filter((event) => event.channel === "chat-success").length, 1)
+  assert.equal(service.getCurrentSession().messages.at(-1).content, expected)
+})
+
+test("高压并发发送只接受一个请求，其余快速拒绝且不污染会话或上游调用", async () => {
+  const { service } = setup()
+  const session = service.createSession()
+  let release
+  const gate = new Promise((resolve) => {
+    release = resolve
+  })
+
+  openAIResponder = async (_body, { signal }) => {
+    if (signal.aborted) {
+      const error = new Error("request aborted")
+      error.name = "AbortError"
+      throw error
+    }
+    await gate
+    return completion("完成")
+  }
+
+  const accepted = service.sendMessage(session.id, "唯一被接受的请求", [], "request-stress-owner")
+  for (let index = 0; index < 20 && openAICalls.length === 0; index += 1) {
+    await new Promise((resolve) => setImmediate(resolve))
+  }
+
+  const rejected = await Promise.all(
+    Array.from({ length: 100 }, (_, index) =>
+      service.sendMessage(session.id, `并发请求 ${index}`, [], `request-stress-${index}`)
+    )
+  )
+  assert.equal(rejected.every((result) => (
+    result.success === false && result.error === "上一条消息仍在处理中，请稍后重试"
+  )), true)
+  assert.equal(openAICalls.length, 1, "并发拒绝不应创建额外上游请求")
+  assert.equal(
+    service.getCurrentSession().messages.filter((message) => message.role === "user").length,
+    1,
+    "被拒绝的并发请求不应写入会话"
+  )
+
+  release()
+  const acceptedResult = await accepted
+  assert.equal(acceptedResult.success, true)
+  assert.equal(service.getCurrentSession().messages.filter((message) => message.role === "user").length, 1)
+})

@@ -515,6 +515,51 @@ test("provider、流式事件和请求标识不会串到其他会话", async () 
   assert.equal(events.some((event) => event.payload?.requestId === "request-A" && event.payload.sessionId === second.id), false)
 })
 
+test("思考吃满输出预算时给出明确错误而不是空白回复", async () => {
+  const { service } = setup({ streamingEnabled: true })
+  openAIResponder = async (body) => {
+    if (!body.stream) return completion("")
+    return (async function* streamReasoningOnly() {
+      yield { choices: [{ delta: { reasoning_content: "先思考" } }] }
+      yield { choices: [{ delta: { reasoning_content: "继续思考" } }] }
+      yield { choices: [{ delta: {}, finish_reason: "length" }] }
+    })()
+  }
+
+  const session = service.createSession()
+  const result = await service.sendMessage(session.id, "图上这道题怎么做", [], "request-truncated")
+
+  assert.equal(result.success, false)
+  assert.match(result.error, /思考过长/)
+  assert.match(result.error, /finish_reason=length/)
+
+  const assistant = service.getSession(session.id).messages.at(-1)
+  assert.equal(assistant.role, "assistant")
+  assert.equal(assistant.status, "error")
+  assert.match(assistant.content, /思考过长/)
+})
+
+test("思考阶段透传进度事件，正文到达后正常完成", async () => {
+  const { service, events } = setup({ streamingEnabled: true })
+  openAIResponder = async (body) => {
+    if (!body.stream) return completion("")
+    return (async function* streamReasoningThenContent() {
+      yield { choices: [{ delta: { reasoning_content: "先想一下" } }] }
+      yield { choices: [{ delta: { content: "答案：4" } }] }
+    })()
+  }
+
+  const session = service.createSession()
+  const result = await service.sendMessage(session.id, "图上这道题怎么做", [], "request-thinking")
+
+  assert.equal(result.success, true)
+  assert.equal(result.content, "答案：4")
+  const thinking = events.filter((event) => event.channel === "chat-thinking")
+  assert.ok(thinking.length > 0)
+  assert.ok(thinking.at(-1).payload.reasoningChars > 0)
+  assert.equal(thinking.at(-1).payload.requestId, "request-thinking")
+})
+
 test("非法输入返回结构化错误且不污染会话或上游调用", async () => {
   const { service } = setup()
   const session = service.createSession()

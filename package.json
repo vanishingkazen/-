@@ -5,7 +5,7 @@
   "scripts": {
     "clean": "npx rimraf dist dist-electron",
     "dev": "npm run build:native:mac && cross-env NODE_ENV=development npm run clean && concurrently \"tsc -w -p tsconfig.electron.json\" \"vite\" \"wait-on -t 30000 http://localhost:54321 && electron ./dist-electron/main.js\"",
-    "test": "node --test --test-concurrency=1 tests/chat-service.test.cjs tests/chat-stability.test.cjs tests/chat-store-stability.test.cjs tests/config-stability.test.cjs tests/crash-recovery-stability.test.cjs tests/electron-startup-smoke.test.cjs tests/interview-context-stability.test.cjs tests/ipc-lifecycle.test.cjs tests/logger-stability.test.cjs tests/macos-privacy-preflight.test.cjs tests/mouse-shake-detector.test.cjs tests/processing-services-stability.test.cjs tests/screenshot-helper.test.cjs tests/screenshot-queue-stability.test.cjs tests/shortcuts.test.cjs tests/voice-recognition-stability.test.cjs tests/voice-recognition.test.cjs",
+    "test": "node --test --test-concurrency=1 tests/api-telemetry-stability.test.cjs tests/auto-updater-stability.test.cjs tests/chat-service.test.cjs tests/chat-stability.test.cjs tests/chat-store-stability.test.cjs tests/config-stability.test.cjs tests/crash-recovery-stability.test.cjs tests/electron-startup-smoke.test.cjs tests/interview-context-stability.test.cjs tests/ipc-lifecycle.test.cjs tests/logger-stability.test.cjs tests/macos-privacy-preflight.test.cjs tests/mouse-shake-detector.test.cjs tests/preload-lifecycle-stability.test.cjs tests/processing-services-stability.test.cjs tests/screenshot-helper.test.cjs tests/screenshot-queue-stability.test.cjs tests/shortcuts.test.cjs tests/voice-recognition-stability.test.cjs tests/voice-recognition.test.cjs",
     "lint": "npx eslint .",
     "start": "npm run build:native:mac && cross-env NODE_ENV=development concurrently \"tsc -p tsconfig.electron.json\" \"vite\" \"wait-on -t 30000 http://localhost:54321 && electron ./dist-electron/main.js\"",
     "build": "cross-env NODE_ENV=production npm run clean && npm run build:native:mac && vite build && tsc -p tsconfig.electron.json",
@@ -17,13 +17,16 @@
     "postinstall": "node native/mac-command-interceptor/build.js",
     "test:chat": "node --test --test-concurrency=1 tests/chat-service.test.cjs tests/chat-stability.test.cjs",
     "test:chat:live": "node tests/chat-live-smoke.cjs",
+    "test:api-log": "electron tests/api-logging-smoke.cjs",
     "test:chat:stability": "node --test --test-concurrency=1 tests/chat-stability.test.cjs",
     "test:shortcuts": "node --test --test-concurrency=1 tests/shortcuts.test.cjs",
     "test:voice": "node --test --test-concurrency=1 tests/voice-recognition.test.cjs",
     "test:config": "node --test --test-concurrency=1 tests/config-stability.test.cjs",
     "test:ipc": "node --test --test-concurrency=1 tests/ipc-lifecycle.test.cjs",
     "test:privacy:mac": "node --test --test-concurrency=1 tests/macos-privacy-preflight.test.cjs",
-    "test:startup": "cross-env STEAMGAMECODE_RUN_STARTUP_SMOKE=1 node --test --test-concurrency=1 tests/electron-startup-smoke.test.cjs"
+    "test:startup": "cross-env STEAMGAMECODE_RUN_STARTUP_SMOKE=1 node --test --test-concurrency=1 tests/electron-startup-smoke.test.cjs",
+    "test:updater": "node --test --test-concurrency=1 tests/auto-updater-stability.test.cjs",
+    "test:preload": "node --test --test-concurrency=1 tests/preload-lifecycle-stability.test.cjs"
   },
   "build": {
     "appId": "com.pandoraq.steamgamecode",

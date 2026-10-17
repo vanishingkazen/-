@@ -13,6 +13,7 @@ import { VoiceRecognitionHelper } from "./VoiceRecognitionHelper"
 import { MouseShakeDetector } from "./MouseShakeDetector"
 import { ChatService } from "./ChatService"
 import { installCrashRecovery, requestAppRestart } from "./CrashRecovery"
+import { describeApiUsageTotals } from "./ApiTelemetry"
 import {
   initializeMainLogging,
   logFromRendererConsole,
@@ -798,6 +799,13 @@ app.on("before-quit", () => {
 })
 
 app.on("quit", () => {
+  // 退出前汇总本次运行的模型调用量，便于事后判断异常比例
+  try {
+    const summary = describeApiUsageTotals()
+    if (summary) mainLog.info(`[api] == 本次运行调用统计 ${summary}`)
+  } catch {
+    /* 统计失败不影响退出 */
+  }
   logShutdown("quit")
 })
 

@@ -139,10 +139,10 @@ function createDeps() {
 const shared = createDeps()
 initializeIpcHandlers(shared.deps)
 
-function invoke(channel, payload) {
+function invoke(channel, ...payloads) {
   const handler = handlers.get(channel)
   assert.ok(handler, `IPC handler not registered: ${channel}`)
-  return handler({ sender: {} }, payload)
+  return handler({ sender: {} }, ...payloads)
 }
 
 test.after(() => {
@@ -236,5 +236,146 @@ test("缺少可选 helper 时，剪贴板、语音、Chat 和 reset IPC 不会�
   assert.deepEqual(await invoke("delete-last-screenshot"), {
     success: false,
     error: "No screenshots to delete"
+  })
+})
+
+test("有主窗口时窗口与截图 IPC 完成副作用并保持返回契约", async () => {
+  const { deps, state } = shared
+  const sent = []
+  const opacities = []
+  const dimensions = []
+  let minimized = 0
+  let closed = 0
+  let screenshotsTaken = 0
+  const screenshotPath = path.join(tempRoot, "new-shot.png")
+  const screenshotQueue = [path.join(tempRoot, "shot-1.png"), path.join(tempRoot, "shot-2.png")]
+
+  deps.getMainWindow = () => state.currentWindow
+  state.currentWindow = {
+    isDestroyed: () => false,
+    setOpacity: (value) => opacities.push(value),
+    minimize: () => { minimized += 1 },
+    close: () => { closed += 1 },
+    webContents: {
+      send: (channel, payload) => sent.push({ channel, payload })
+    }
+  }
+  deps.setWindowDimensions = (width, height) => dimensions.push({ width, height })
+  deps.getScreenshotQueue = () => screenshotQueue
+  deps.getExtraScreenshotQueue = () => []
+  deps.getImagePreview = async (filePath) => `preview:${path.basename(filePath)}`
+  deps.takeScreenshot = async () => {
+    screenshotsTaken += 1
+    return screenshotPath
+  }
+
+  assert.deepEqual(await invoke("set-opacity", 0.01), { success: true, opacity: 0.1 })
+  assert.deepEqual(await invoke("set-opacity", 5), { success: true, opacity: 1 })
+  assert.deepEqual(await invoke("set-opacity", Number.NaN), { success: true, opacity: 1 })
+  assert.deepEqual(await invoke("set-opacity", "invalid"), { success: true, opacity: 1 })
+  assert.deepEqual(opacities, [0.1, 1, 1, 1])
+
+  assert.deepEqual(await invoke("open-settings-portal"), { success: true })
+  assert.deepEqual(sent.at(-1), { channel: "show-settings-dialog", payload: undefined })
+  assert.deepEqual(await invoke("minimize-main-window"), { success: true })
+  assert.deepEqual(await invoke("close-main-window"), { success: true })
+  assert.equal(minimized, 1)
+  assert.equal(closed, 1)
+
+  const togglesBefore = state.toggles
+  assert.deepEqual(await invoke("toggle-window"), { success: true })
+  assert.equal(state.toggles, togglesBefore + 1)
+
+  assert.equal(await invoke("update-content-dimensions", { width: 1280, height: 720 }), undefined)
+  assert.equal(await invoke("update-content-dimensions", { width: 0, height: 720 }), undefined)
+  assert.deepEqual(dimensions, [{ width: 1280, height: 720 }])
+
+  assert.deepEqual(await invoke("get-screenshots"), [
+    { path: screenshotQueue[0], preview: "preview:shot-1.png" },
+    { path: screenshotQueue[1], preview: "preview:shot-2.png" }
+  ])
+  assert.equal(await invoke("get-image-preview", screenshotQueue[0]), "preview:shot-1.png")
+  assert.deepEqual(await invoke("delete-screenshot", screenshotQueue[0]), { success: true })
+
+  assert.deepEqual(await invoke("trigger-screenshot"), { success: true })
+  assert.equal(screenshotsTaken, 1)
+  assert.deepEqual(sent.at(-1), {
+    channel: "screenshot-taken",
+    payload: { path: screenshotPath, preview: "preview:new-shot.png" }
+  })
+
+  deps.takeScreenshot = async () => {
+    throw new Error("capture failed")
+  }
+  assert.deepEqual(await invoke("trigger-screenshot"), { error: "Failed to trigger screenshot" })
+  state.currentWindow = null
+})
+
+test("语音与纠错 IPC 稳定转发双侧声道并在 helper 缺失时返回默认值", async () => {
+  const { deps } = shared
+  const calls = []
+  deps.voiceRecognitionHelper = {
+    async start(source) {
+      calls.push({ method: "start", source })
+      return { success: true }
+    },
+    appendAudio(audio, source) {
+      calls.push({ method: "appendAudio", source, bytes: audio.length })
+      return { success: true }
+    },
+    async stop(source) {
+      calls.push({ method: "stop", source })
+      return { success: true, transcript: "done" }
+    },
+    clearTranscript(source) {
+      calls.push({ method: "clearTranscript", source })
+    },
+    getConversationTranscript() {
+      return { systemTranscript: "问题", microphoneTranscript: "回答", rawMicrophoneTranscript: "回答", removedSegments: 0, turns: [] }
+    }
+  }
+  deps.processingHelper = {
+    async correctVoiceConversation(conversation) {
+      calls.push({ method: "correctVoiceConversation", conversation })
+      return { ...conversation, corrected: true }
+    }
+  }
+
+  assert.deepEqual(await invoke("voice-start", "system"), { success: true })
+  assert.deepEqual(await invoke("voice-audio", new Uint8Array([1, 2]), "system"), { success: true })
+  assert.deepEqual(await invoke("voice-stop", "system"), { success: true, transcript: "done" })
+  assert.deepEqual(await invoke("voice-clear", "system"), { success: true })
+  assert.deepEqual(await invoke("voice-conversation"), {
+    systemTranscript: "问题",
+    microphoneTranscript: "回答",
+    rawMicrophoneTranscript: "回答",
+    removedSegments: 0,
+    turns: []
+  })
+
+  const conversation = await invoke("voice-conversation")
+  assert.equal((await invoke("voice-correct-conversation", conversation)).corrected, true)
+  assert.deepEqual(calls.map((call) => [call.method, call.source]), [
+    ["start", "system"],
+    ["appendAudio", "system"],
+    ["stop", "system"],
+    ["clearTranscript", "system"],
+    ["correctVoiceConversation", undefined]
+  ])
+  assert.equal(calls.at(-1).method, "correctVoiceConversation")
+
+  deps.voiceRecognitionHelper = null
+  deps.processingHelper = null
+  assert.deepEqual(await invoke("voice-start", "invalid"), undefined)
+  assert.deepEqual(await invoke("voice-conversation"), {
+    systemTranscript: "",
+    microphoneTranscript: "",
+    rawMicrophoneTranscript: "",
+    removedSegments: 0,
+    turns: []
+  })
+  assert.deepEqual(await invoke("voice-correct-conversation", { turns: [] }), {
+    turns: [],
+    corrected: false
   })
 })

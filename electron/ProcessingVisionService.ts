@@ -2,6 +2,7 @@ import type { BrowserWindow } from "electron"
 import Anthropic from "@anthropic-ai/sdk"
 import { configHelper, type Config } from "./ConfigHelper"
 import type { ProcessingAIClientManager } from "./ProcessingAIClientManager"
+import { withApiCall } from "./ApiTelemetry"
 
 export interface VisionScreenshot {
   path: string
@@ -98,52 +99,100 @@ export class ProcessingVisionService {
 
       if (config.apiProvider === "openai-compatible") {
         if (!this.clients.openaiClient) throw new Error("视觉模型客户端尚未初始化")
-        const response = await this.clients.openaiClient.chat.completions.create(
+        const model = config.extractionModel || "gpt-4o"
+        const response = await withApiCall(
           {
-            model: config.extractionModel || "gpt-4o",
-            messages: [
-              {
-                role: "user",
-                content: [
-                  { type: "text", text: prompt },
-                  ...imageDataList.map((data) => ({
-                    type: "image_url" as const,
-                    image_url: { url: `data:image/png;base64,${data}` }
-                  }))
-                ]
-              }
-            ],
-            max_tokens: this.deps.getMaxOutputTokens(config),
-            temperature: 0.1
+            kind: "vision",
+            provider: config.apiProvider,
+            model,
+            baseURL: config.baseURL,
+            stream: false,
+            maxTokens: this.deps.getMaxOutputTokens(config),
+            temperature: 0.1,
+            messageCount: 1,
+            imageCount: imageDataList.length
           },
-          { signal }
+          async () =>
+            this.clients.openaiClient!.chat.completions.create(
+              {
+                model,
+                messages: [
+                  {
+                    role: "user",
+                    content: [
+                      { type: "text", text: prompt },
+                      ...imageDataList.map((data) => ({
+                        type: "image_url" as const,
+                        image_url: { url: `data:image/png;base64,${data}` }
+                      }))
+                    ]
+                  }
+                ],
+                max_tokens: this.deps.getMaxOutputTokens(config),
+                temperature: 0.1
+              },
+              { signal }
+            ),
+          (response) => {
+            const message = response.choices?.[0]?.message as
+              | { content?: string | null; reasoning_content?: string | null }
+              | undefined
+            return {
+              content: message?.content || "",
+              reasoningContent: message?.reasoning_content || "",
+              finishReason: response.choices?.[0]?.finish_reason ?? null,
+              usage: (response as { usage?: unknown }).usage
+            }
+          }
         )
         answer = response.choices[0]?.message?.content?.trim() || ""
       } else if (config.apiProvider === "anthropic") {
         if (!this.clients.anthropicClient) throw new Error("Anthropic API Key 尚未配置")
-        const response = await this.clients.anthropicClient.messages.create(
+        const model = config.extractionModel || "claude-3-7-sonnet-20250219"
+        const response = await withApiCall(
           {
-            model: config.extractionModel || "claude-3-7-sonnet-20250219",
-            max_tokens: this.deps.getMaxOutputTokens(config),
+            kind: "vision",
+            provider: config.apiProvider,
+            model,
+            stream: false,
+            maxTokens: this.deps.getMaxOutputTokens(config),
             temperature: 0.1,
-            messages: [
-              {
-                role: "user",
-                content: [
-                  { type: "text", text: prompt },
-                  ...imageDataList.map((data) => ({
-                    type: "image" as const,
-                    source: {
-                      type: "base64" as const,
-                      media_type: "image/png" as const,
-                      data
-                    }
-                  }))
-                ]
-              }
-            ]
+            messageCount: 1,
+            imageCount: imageDataList.length
           },
-          { signal }
+          async () =>
+            this.clients.anthropicClient!.messages.create(
+              {
+                model,
+                max_tokens: this.deps.getMaxOutputTokens(config),
+                temperature: 0.1,
+                messages: [
+                  {
+                    role: "user",
+                    content: [
+                      { type: "text", text: prompt },
+                      ...imageDataList.map((data) => ({
+                        type: "image" as const,
+                        source: {
+                          type: "base64" as const,
+                          media_type: "image/png" as const,
+                          data
+                        }
+                      }))
+                    ]
+                  }
+                ]
+              },
+              { signal }
+            ),
+          (response) => ({
+            content: response.content
+              .filter((block): block is Anthropic.TextBlock => block.type === "text")
+              .map((block) => block.text)
+              .join("\n"),
+            finishReason: (response as { stop_reason?: string | null }).stop_reason ?? null,
+            usage: (response as { usage?: unknown }).usage
+          })
         )
         answer = response.content
           .filter((block): block is Anthropic.TextBlock => block.type === "text")

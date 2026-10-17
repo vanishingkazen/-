@@ -3,6 +3,7 @@ import path from "node:path"
 import { createHash } from "node:crypto"
 import axios from "axios"
 import FormData from "form-data"
+import { withApiCall } from "./ApiTelemetry"
 
 export interface DeepSeekFilesConfig {
   apiKey: string
@@ -60,16 +61,30 @@ export async function uploadDeepSeekImage(
     contentType: undefined
   })
 
-  const response = await axios.post(filesEndpoint(config), form, {
-    headers: {
-      ...form.getHeaders(),
-      Authorization: `Bearer ${config.apiKey}`
+  const response = await withApiCall(
+    {
+      kind: "file-upload",
+      provider: config.provider,
+      model: "files-api",
+      baseURL: config.baseURL,
+      notes: { bytes: fs.statSync(filePath).size }
     },
-    maxBodyLength: Infinity,
-    maxContentLength: Infinity,
-    timeout: 600000,
-    signal
-  })
+    async () =>
+      axios.post(filesEndpoint(config), form, {
+        headers: {
+          ...form.getHeaders(),
+          Authorization: `Bearer ${config.apiKey}`
+        },
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+        timeout: 600000,
+        signal
+      }),
+    (response) => ({
+      content: typeof response.data?.id === "string" ? response.data.id : "",
+      notes: { file_id: String(response.data?.id || "") }
+    })
+  )
 
   const id = typeof response.data?.id === "string" ? response.data.id : ""
   if (!id) throw new Error("DeepSeek Files API did not return a file id")
@@ -82,9 +97,20 @@ export async function deleteDeepSeekFile(
   signal?: AbortSignal
 ): Promise<void> {
   if (!supportsDeepSeekFilesApi(config) || !fileId) return
-  await axios.delete(`${filesEndpoint(config)}/${encodeURIComponent(fileId)}`, {
-    headers: { Authorization: `Bearer ${config.apiKey}` },
-    timeout: 30000,
-    signal
-  })
+  await withApiCall(
+    {
+      kind: "file-delete",
+      provider: config.provider,
+      model: "files-api",
+      baseURL: config.baseURL,
+      notes: { file_id: fileId }
+    },
+    async () =>
+      axios.delete(`${filesEndpoint(config)}/${encodeURIComponent(fileId)}`, {
+        headers: { Authorization: `Bearer ${config.apiKey}` },
+        timeout: 30000,
+        signal
+      }),
+    () => ({ content: "deleted" })
+  )
 }

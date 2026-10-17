@@ -229,6 +229,89 @@ test("握手成功后进入 listening，音频与停止流程保持稳定", asyn
   assert.deepEqual(stopResult, { success: true, transcript: "介绍一下项目" })
 })
 
+test("连续 1000 帧音频在 listening 状态下全部写入且不抛异常", async (t) => {
+  const timers = createFakeTimers()
+  t.after(() => timers.restore())
+
+  const { VoiceRecognitionHelper } = loadVoice()
+  const helper = new VoiceRecognitionHelper(() => null)
+  const pending = helper.start("microphone")
+  await tick()
+  const socket = sockets[0]
+  socket.readyState = MockWebSocket.OPEN
+  socket.emit("open")
+  socket.emit("message", JSON.stringify({ header: { event: "task-started" } }))
+  await pending
+
+  for (let index = 0; index < 1000; index += 1) {
+    assert.deepEqual(helper.appendAudio(new Uint8Array([index & 0xff, 0, 0, 0])), { success: true })
+  }
+
+  assert.equal(socket.sent.length, 1001, "应发送 1 条 run-task 和 1000 帧音频")
+  assert.equal(socket.sent.slice(1).every((item) => item.options?.binary === true), true)
+})
+
+test("服务端意外关闭会清理连接与状态，并可立即重新建立会话", async (t) => {
+  const timers = createFakeTimers()
+  t.after(() => timers.restore())
+
+  const { VoiceRecognitionHelper } = loadVoice()
+  const window = createWindow()
+  const helper = new VoiceRecognitionHelper(() => window)
+  const firstPending = helper.start("microphone")
+  await tick()
+  const firstSocket = sockets[0]
+  firstSocket.readyState = MockWebSocket.OPEN
+  firstSocket.emit("open")
+  firstSocket.emit("message", JSON.stringify({ header: { event: "task-started" } }))
+  await firstPending
+
+  firstSocket.emit("close")
+  assert.equal(helper.sessions.microphone.state, "idle")
+  assert.equal(helper.sessions.microphone.socket, null)
+  assert.deepEqual(helper.appendAudio(new Uint8Array([1])), { success: false })
+
+  const retryPending = helper.start("microphone")
+  await tick()
+  const secondSocket = sockets[1]
+  assert.notEqual(secondSocket, firstSocket)
+  secondSocket.readyState = MockWebSocket.OPEN
+  secondSocket.emit("open")
+  secondSocket.emit("message", JSON.stringify({ header: { event: "task-started" } }))
+  assert.deepEqual(await retryPending, { success: true })
+  assert.equal(helper.sessions.microphone.state, "listening")
+})
+
+test.todo("服务端意外关闭后应立即释放旧 socket 上的剩余监听器")
+
+test("WebSocket 握手响应异常时返回服务端原因并进入 error 状态", async (t) => {
+  const timers = createFakeTimers()
+  t.after(() => timers.restore())
+
+  const { VoiceRecognitionHelper } = loadVoice()
+  const window = createWindow()
+  const helper = new VoiceRecognitionHelper(() => window)
+  const pending = helper.start("microphone")
+  await tick()
+  const socket = sockets[0]
+  const response = new EventEmitter()
+  response.statusCode = 401
+
+  socket.emit("unexpected-response", {}, response)
+  response.emit("data", Buffer.from(JSON.stringify({ message: "invalid api key" })))
+  response.emit("end")
+
+  assert.deepEqual(await pending, {
+    success: false,
+    error: "语音服务连接失败：invalid api key"
+  })
+  assert.equal(helper.sessions.microphone.state, "error")
+  assert.equal(
+    window.sent.some((item) => item.channel === "voice-status" && item.data.state === "error"),
+    true
+  )
+})
+
 test("任务启动失败会返回结构化错误，且不残留 listening 状态", async (t) => {
   const timers = createFakeTimers()
   t.after(() => timers.restore())

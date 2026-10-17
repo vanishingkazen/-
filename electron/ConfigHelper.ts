@@ -47,7 +47,7 @@ export class ConfigHelper extends EventEmitter {
     solutionModel: "gpt-4o",
     debuggingModel: "gpt-4o",
     streamingEnabled: true,
-    maxOutputTokens: 32768,
+    maxOutputTokens: 65536,
     contextMessageLimit: 30,
     contextWindowTokens: 128000,
     speechApiKey: "",

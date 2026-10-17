@@ -362,7 +362,7 @@ export class ChatService {
       { role: "system", content: "请压缩下面的对话，保留用户目标、关键事实、代码约定和未解决问题。只输出摘要，不要回答对话。" },
       { role: "user", content: transcript }
     ]
-    return this.completeText(messages, signal)
+    return this.completeText(messages, signal, { kind: "summary" })
   }
 
   private async generateReply(session: ChatSession, requestId: string, signal: AbortSignal): Promise<string> {
@@ -418,6 +418,13 @@ export class ChatService {
           sessionId: session.id,
           content: visibleResponseContent(content),
           done: false
+        })
+      },
+      onReasoning: (reasoningChars) => {
+        this.deps.getMainWindow()?.webContents.send("chat-thinking", {
+          requestId,
+          sessionId: session.id,
+          reasoningChars
         })
       }
     })
@@ -623,8 +630,12 @@ export class ChatService {
     return history
   }
 
-  private async completeText(messages: ProviderMessage[], signal: AbortSignal): Promise<string> {
-    return this.provider.completeText(configHelper.loadConfig(), messages, signal)
+  private async completeText(
+    messages: ProviderMessage[],
+    signal: AbortSignal,
+    options: { kind?: string; label?: string } = {}
+  ): Promise<string> {
+    return this.provider.completeText(configHelper.loadConfig(), messages, signal, options)
   }
 
   private async deleteRemoteFiles(

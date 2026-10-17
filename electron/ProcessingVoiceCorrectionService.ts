@@ -3,6 +3,7 @@ import type { VoiceConversationTranscript, VoiceConversationTurn } from "./Voice
 import { configHelper } from "./ConfigHelper"
 import { loadInterviewAsrEnhancement } from "./InterviewContextHelper"
 import type { ProcessingAIClientManager } from "./ProcessingAIClientManager"
+import { withApiCall } from "./ApiTelemetry"
 
 type QwenCorrectionRequest =
   OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming & {
@@ -90,9 +91,33 @@ ${JSON.stringify({
             ? { chat_template_kwargs: { enable_thinking: false } }
             : {})
         }
-      const response = await this.openaiClient.chat.completions.create(
-        correctionRequest,
-        { signal: AbortSignal.timeout(10_000) }
+      const response = await withApiCall(
+        {
+          kind: "voice-correction",
+          provider: config.apiProvider,
+          model: correctionRequest.model,
+          baseURL: config.baseURL,
+          stream: false,
+          maxTokens: correctionRequest.max_tokens as number | undefined,
+          temperature: correctionRequest.temperature as number | undefined,
+          messageCount: Array.isArray(correctionRequest.messages) ? correctionRequest.messages.length : undefined
+        },
+        async () =>
+          this.openaiClient!.chat.completions.create(
+            correctionRequest,
+            { signal: AbortSignal.timeout(10_000) }
+          ),
+        (response) => {
+          const message = response.choices?.[0]?.message as
+            | { content?: string | null; reasoning_content?: string | null }
+            | undefined
+          return {
+            content: message?.content || "",
+            reasoningContent: message?.reasoning_content || "",
+            finishReason: response.choices?.[0]?.finish_reason ?? null,
+            usage: (response as { usage?: unknown }).usage
+          }
+        }
       )
       const raw = response.choices[0]?.message?.content
       if (!raw?.trim()) return original

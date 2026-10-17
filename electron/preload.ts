@@ -10,6 +10,7 @@ type ChatStartedPayload = {
   acceptedImagePaths?: string[]
 }
 type ChatStreamPayload = { requestId: string; sessionId: string; content: string; done: boolean }
+type ChatThinkingPayload = { requestId: string; sessionId: string; reasoningChars: number }
 type ChatContextCompressedPayload = { sessionId: string; summary: string }
 type ChatSuccessPayload = { requestId: string; sessionId: string; content: string; session: unknown }
 type ChatErrorPayload = { requestId: string; sessionId: string; error: string }
@@ -111,6 +112,11 @@ const electronAPI = {
     const subscription = (_event: IpcRendererEvent, data: ChatStreamPayload) => callback(data)
     ipcRenderer.on("chat-stream", subscription)
     return () => ipcRenderer.removeListener("chat-stream", subscription)
+  },
+  onChatThinking: (callback: (data: ChatThinkingPayload) => void) => {
+    const subscription = (_event: IpcRendererEvent, data: ChatThinkingPayload) => callback(data)
+    ipcRenderer.on("chat-thinking", subscription)
+    return () => ipcRenderer.removeListener("chat-thinking", subscription)
   },
   onChatContextCompressed: (callback: (data: ChatContextCompressedPayload) => void) => {
     const subscription = (_event: IpcRendererEvent, data: ChatContextCompressedPayload) => callback(data)

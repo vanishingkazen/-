@@ -5,11 +5,13 @@ import { configHelper, type Config } from "./ConfigHelper"
 import { loadInterviewContextPrompt } from "./InterviewContextHelper"
 import type { ProblemInfo } from "./contracts"
 import type { ProcessingAIClientManager } from "./ProcessingAIClientManager"
+import { withApiCall } from "./ApiTelemetry"
 
 type DeepSeekStreamingRequest =
   OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming & {
     thinking?: { type: "enabled" | "disabled" }
     reasoning_effort?: "low" | "medium" | "high" | "max"
+    stream_options?: { include_usage?: boolean }
   }
 
 type FollowupMessage = { role: "user" | "assistant"; content: string }
@@ -197,60 +199,142 @@ ${content}
         if (useStreaming) {
           const chatRequest: DeepSeekStreamingRequest = {
             ...chatParams,
-            stream: true
+            stream: true,
+            // 官方 DeepSeek 接口支持 include_usage：流末返回 usage，
+            // 便于事后判断思考 token 是否吃光了 max_tokens。
+            ...(isOfficialDeepSeekEndpoint(chatEndpoint)
+              ? { stream_options: { include_usage: true } }
+              : {})
           }
-          const stream = await client.chat.completions.create(
-            chatRequest,
-            { signal: controller.signal }
-          )
 
-          mainWindow.webContents.send("processing-status", {
-            stage: "followup",
-            requestId,
-            message: "已连接，正在接收回答...",
-            progress: 40
-          })
+          await withApiCall(
+            {
+              kind: "followup",
+              provider: config.apiProvider,
+              model: chatParams.model,
+              baseURL: chatEndpoint,
+              stream: true,
+              maxTokens: chatParams.max_tokens,
+              temperature: chatParams.temperature,
+              messageCount: chatMessages.length
+            },
+            async (tracker) => {
+              const stream = await client.chat.completions.create(
+                chatRequest,
+                { signal: controller.signal }
+              )
 
-          let lastUpdate = 0
-          for await (const chunk of stream) {
-            const delta = chunk.choices[0]?.delta as
-              | { content?: string | null }
-              | undefined
-            if (delta?.content) responseContent += delta.content
-
-            const now = Date.now()
-            if (now - lastUpdate >= 50 && responseContent) {
-              mainWindow.webContents.send("chat-stream", {
+              mainWindow.webContents.send("processing-status", {
+                stage: "followup",
                 requestId,
-                content: responseContent,
-                done: false
+                message: "已连接，正在接收回答...",
+                progress: 40
               })
-              lastUpdate = now
-            }
-          }
+
+              let lastUpdate = 0
+              for await (const chunk of stream) {
+                const choice = chunk.choices?.[0]
+                if (choice?.finish_reason) {
+                  tracker.noteStreamChunk({ finishReason: choice.finish_reason })
+                }
+                const delta = choice?.delta as
+                  | { content?: string | null; reasoning_content?: string | null }
+                  | undefined
+                const contentDelta = delta?.content || ""
+                const reasoningDelta = delta?.reasoning_content || ""
+                const chunkUsage = (chunk as { usage?: unknown }).usage
+                if (contentDelta || reasoningDelta) {
+                  tracker.noteStreamChunk({
+                    content: contentDelta,
+                    reasoningContent: reasoningDelta
+                  })
+                }
+                if (contentDelta) responseContent += contentDelta
+
+                const now = Date.now()
+                if (now - lastUpdate >= 50 && responseContent) {
+                  mainWindow.webContents.send("chat-stream", {
+                    requestId,
+                    content: responseContent,
+                    done: false
+                  })
+                  lastUpdate = now
+                }
+                // usage 只出现在最后一个 chunk
+                if (chunkUsage) tracker.noteUsage(chunkUsage)
+              }
+
+              return { content: responseContent }
+            },
+            (result) => ({ content: result.content })
+          )
         } else {
-          const response = await client.chat.completions.create(
-            { ...chatParams } as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
-            { signal: controller.signal }
+          const response = await withApiCall(
+            {
+              kind: "followup",
+              provider: config.apiProvider,
+              model: chatParams.model,
+              baseURL: chatEndpoint,
+              stream: false,
+              maxTokens: chatParams.max_tokens,
+              temperature: chatParams.temperature,
+              messageCount: chatMessages.length
+            },
+            async () =>
+              client.chat.completions.create(
+                { ...chatParams } as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
+                { signal: controller.signal }
+              ),
+            (response) => {
+              const message = response.choices?.[0]?.message as
+                | { content?: string | null; reasoning_content?: string | null }
+                | undefined
+              return {
+                content: message?.content || "",
+                reasoningContent: message?.reasoning_content || "",
+                finishReason: response.choices?.[0]?.finish_reason ?? null,
+                usage: (response as { usage?: unknown }).usage
+              }
+            }
           )
           responseContent = response.choices[0]?.message?.content?.trim() || ""
         }
       } else if (config.apiProvider === "anthropic") {
         if (!this.anthropicClient) throw new Error("Anthropic API key 尚未配置")
-        const response = await this.anthropicClient.messages.create({
-          model: config.solutionModel || "claude-3-7-sonnet-20250219",
-          max_tokens: this.getMaxOutputTokens(config),
-          temperature: 0.2,
-          system:
-            chatSystemPrompt,
-          messages: [
-            ...priorMessages.map((item) => ({
-              role: item.role,
-              content: item.content
-            })),
-            { role: "user" as const, content: contextPrompt }
-          ]
-        })
+        const anthropicMessages = [
+          ...priorMessages.map((item) => ({
+            role: item.role,
+            content: item.content
+          })),
+          { role: "user" as const, content: contextPrompt }
+        ]
+        const response = await withApiCall(
+          {
+            kind: "followup",
+            provider: config.apiProvider,
+            model: config.solutionModel || "claude-3-7-sonnet-20250219",
+            stream: false,
+            maxTokens: this.getMaxOutputTokens(config),
+            temperature: 0.2,
+            messageCount: anthropicMessages.length
+          },
+          async () =>
+            this.anthropicClient!.messages.create({
+              model: config.solutionModel || "claude-3-7-sonnet-20250219",
+              max_tokens: this.getMaxOutputTokens(config),
+              temperature: 0.2,
+              system: chatSystemPrompt,
+              messages: anthropicMessages
+            }),
+          (response) => ({
+            content: response.content
+              .filter((block) => block.type === "text")
+              .map((block) => (block.type === "text" ? block.text : ""))
+              .join("\n"),
+            finishReason: (response as { stop_reason?: string | null }).stop_reason ?? null,
+            usage: (response as { usage?: unknown }).usage
+          })
+        )
         responseContent =
           response.content[0]?.type === "text" ? response.content[0].text : ""
       }
