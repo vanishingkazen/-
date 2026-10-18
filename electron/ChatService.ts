@@ -27,6 +27,7 @@ export interface ChatServiceDeps {
     acceptedImagePaths: string[]
     persistedImagePaths: string[]
   }) => void
+  onEvent?: (channel: string, payload?: unknown) => void
 }
 
 const SYSTEM_PROMPT = "你是一个多轮对话助手，能够处理文本、代码和截图。保持上下文连续，直接回答用户，所有说明和代码注释使用简体中文。"
@@ -173,6 +174,10 @@ export class ChatService {
     return this.store.current()
   }
 
+  public isBusy(): boolean {
+    return this.abortController !== null
+  }
+
   public listSessions(): ChatSession[] {
     return this.store.list()
   }
@@ -183,6 +188,16 @@ export class ChatService {
 
   public getSession(id: string): ChatSession | null {
     return this.store.get(id)
+  }
+
+  public resolveAttachmentPath(sessionId: string, messageId: string, imageIndex: number): string | null {
+    const session = this.store.get(sessionId)
+    const message = session?.messages.find((item) => item.id === messageId)
+    const image = message?.images[imageIndex]
+    if (!image) return null
+    if (this.store.isAttachmentPath(sessionId, image.path)) return image.path
+    if (image.transportPath && this.store.isAttachmentPath(sessionId, image.transportPath)) return image.transportPath
+    return null
   }
 
   public selectSession(id: string): ChatSession | null {
@@ -252,7 +267,7 @@ export class ChatService {
     this.abortController = controller
     try {
       const acceptedImagePaths = safeImages.map((image) => image.path)
-      mainWindow.webContents.send("chat-started", {
+      this.emit("chat-started", {
         sessionId: session.id,
         requestId,
         userMessage,
@@ -275,7 +290,7 @@ export class ChatService {
       const response = parsedResponse.content
       if (parsedResponse.language) {
         configHelper.updateConfig({ language: parsedResponse.language })
-        mainWindow.webContents.send("language-detected", { language: parsedResponse.language })
+        this.emit("language-detected", { language: parsedResponse.language })
       }
       const assistantMessage: ChatMessage = {
         id: requestId,
@@ -288,7 +303,7 @@ export class ChatService {
       session.messages.push(assistantMessage)
       session.updatedAt = new Date().toISOString()
       this.store.save()
-      mainWindow.webContents.send("chat-success", { requestId, sessionId: session.id, content: response, session })
+      this.emit("chat-success", { requestId, sessionId: session.id, content: response, session })
       return { success: true, content: response }
     } catch (error) {
       const message = error instanceof Error ? error.message : "对话请求失败"
@@ -305,7 +320,7 @@ export class ChatService {
         session.updatedAt = new Date().toISOString()
         this.store.save()
       }
-      mainWindow.webContents.send("chat-error", { requestId, sessionId: session.id, error: message })
+      this.emit("chat-error", { requestId, sessionId: session.id, error: message })
       return { success: false, error: message }
     } finally {
       if (this.abortController === controller) this.abortController = null
@@ -346,7 +361,7 @@ export class ChatService {
       session.messages = recent
       session.updatedAt = new Date().toISOString()
       this.store.save()
-      this.deps.getMainWindow()?.webContents.send("chat-context-compressed", {
+      this.emit("chat-context-compressed", {
         sessionId: session.id,
         summary: session.summary
       })
@@ -413,7 +428,7 @@ export class ChatService {
           : [],
       signal,
       onStream: (content) => {
-        this.deps.getMainWindow()?.webContents.send("chat-stream", {
+        this.emit("chat-stream", {
           requestId,
           sessionId: session.id,
           content: visibleResponseContent(content),
@@ -421,7 +436,7 @@ export class ChatService {
         })
       },
       onReasoning: (reasoningChars) => {
-        this.deps.getMainWindow()?.webContents.send("chat-thinking", {
+        this.emit("chat-thinking", {
           requestId,
           sessionId: session.id,
           reasoningChars
@@ -674,12 +689,18 @@ export class ChatService {
   }
 
   private emitFinalDelta(requestId: string, sessionId: string, content: string): void {
-    this.deps.getMainWindow()?.webContents.send("chat-stream", {
+    this.emit("chat-stream", {
       requestId,
       sessionId,
       content: visibleResponseContent(content),
       done: true
     })
+  }
+
+  private emit(channel: string, payload?: unknown): void {
+    const mainWindow = this.deps.getMainWindow()
+    if (mainWindow && (typeof mainWindow.isDestroyed !== "function" || !mainWindow.isDestroyed())) mainWindow.webContents.send(channel, payload)
+    this.deps.onEvent?.(channel, payload)
   }
 
 }

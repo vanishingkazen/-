@@ -1,4 +1,5 @@
 import type { ChatAttachment, ChatMessage, ChatSession, ChatSessionSeed } from "./chat"
+import type { CompanionStatus } from "../../electron/CompanionTypes"
 
 export interface VoiceConversationTurn {
   speaker: "interviewer" | "candidate"
@@ -7,6 +8,13 @@ export interface VoiceConversationTurn {
 }
 
 export interface ElectronAPI {
+  getCompanionStatus: () => Promise<CompanionStatus>
+  startCompanion: () => Promise<{ success: boolean; status?: CompanionStatus; error?: string }>
+  stopCompanion: () => Promise<{ success: boolean; status?: CompanionStatus }>
+  refreshCompanionPairing: () => Promise<{ success: boolean; status?: CompanionStatus; error?: string }>
+  disconnectCompanionPhone: () => Promise<{ success: boolean; status?: CompanionStatus }>
+  onCompanionStatus: (callback: (status: CompanionStatus) => void) => () => void
+  onCompanionSessionSelected: (callback: (session: ChatSession) => void) => () => void
   updateContentDimensions: (dimensions: { width: number; height: number }) => Promise<void>
   getScreenshots: () => Promise<unknown>
   deleteScreenshot: (path: string) => Promise<{ success: boolean; error?: string }>

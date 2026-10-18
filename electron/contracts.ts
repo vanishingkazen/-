@@ -3,6 +3,7 @@ import type { ChatService } from "./ChatService"
 import type { ProcessingHelper } from "./ProcessingHelper"
 import type { ScreenshotHelper } from "./ScreenshotHelper"
 import type { VoiceRecognitionHelper } from "./VoiceRecognitionHelper"
+import type { CompanionServer } from "./CompanionServer"
 
 export type AppView = "queue" | "solutions" | "debug"
 
@@ -92,4 +93,5 @@ export interface IIpcHandlerDeps {
   moveWindowRight: () => void
   moveWindowUp: () => void
   moveWindowDown: () => void
+  companionServer: CompanionServer | null
 }

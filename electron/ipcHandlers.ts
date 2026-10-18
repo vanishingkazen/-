@@ -6,6 +6,7 @@ import { configHelper } from "./ConfigHelper"
 import type { VoiceSource } from "./VoiceRecognitionHelper"
 import { ensureInterviewContextFile, getInterviewContextStatus } from "./InterviewContextHelper"
 import type { ChatSessionSeed } from "./ChatService"
+import type { CompanionStatus } from "./CompanionTypes"
 import { getLogInfo, logFromRenderer, openLogDirectory } from "./logger"
 
 /** 只接受本应用窗口发来的日志，避免其它渲染进程写入日志文件 */
@@ -31,6 +32,42 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
   ipcMain.handle("get-log-info", () => getLogInfo())
 
   ipcMain.handle("open-log-directory", () => openLogDirectory())
+
+  ipcMain.handle("companion-get-status", () => deps.companionServer?.getStatus() || {
+    running: false,
+    connected: false,
+    addresses: []
+  } satisfies CompanionStatus)
+  ipcMain.handle("companion-start", async () => {
+    try {
+      return { success: true, status: await deps.companionServer?.start() }
+    } catch (error) {
+      return {
+        success: false,
+        status: deps.companionServer?.getStatus(),
+        error: error instanceof Error ? error.message : "无法启动手机伴随服务"
+      }
+    }
+  })
+  ipcMain.handle("companion-stop", async () => ({
+    success: true,
+    status: await deps.companionServer?.stop()
+  }))
+  ipcMain.handle("companion-refresh-pairing", () => {
+    try {
+      return { success: true, status: deps.companionServer?.refreshPairing() }
+    } catch (error) {
+      return {
+        success: false,
+        status: deps.companionServer?.getStatus(),
+        error: error instanceof Error ? error.message : "无法刷新配对码"
+      }
+    }
+  })
+  ipcMain.handle("companion-disconnect-phone", () => ({
+    success: true,
+    status: deps.companionServer?.disconnectPhone()
+  }))
 
   // Configuration handlers
   ipcMain.handle("get-config", () => {
@@ -267,11 +304,15 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
   })
 
   ipcMain.handle("chat-new-session", (_event, seed?: ChatSessionSeed) => {
-    return deps.chatService?.createSession(seed) || null
+    const session = deps.chatService?.createSession(seed) || null
+    if (session) deps.companionServer?.publish("refresh")
+    return session
   })
 
   ipcMain.handle("chat-select-session", (_event, id: string) => {
-    return deps.chatService?.selectSession(id) || null
+    const session = deps.chatService?.selectSession(id) || null
+    if (session) deps.companionServer?.publish("refresh")
+    return session
   })
   ipcMain.handle("chat-list-sessions", () => {
     return deps.chatService?.listSessions() || []
@@ -281,6 +322,7 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     if (!id || !deps.chatService) return { success: false }
     const wasCurrent = deps.chatService.getCurrentSession().id === id
     const success = deps.chatService.deleteSession(id)
+    if (success) deps.companionServer?.publish("refresh")
     return {
       success,
       ...(success && wasCurrent ? { session: deps.chatService.getCurrentSession() } : {})

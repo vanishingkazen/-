@@ -11,6 +11,7 @@ import {
   MicOff,
   Send,
   Settings,
+  Smartphone,
   Square,
   X
 } from "lucide-react"
@@ -28,6 +29,7 @@ import rust from "react-syntax-highlighter/dist/esm/languages/prism/rust"
 import type { ChatMessage as StoredChatMessage } from "../types/chat"
 import { useToast } from "../contexts/toast"
 import { COMMAND_KEY, isWindows } from "../utils/platform"
+import CompanionDialog from "../components/CompanionDialog"
 
 interface ChatProps {
   currentLanguage: string
@@ -249,6 +251,7 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
   const [attachments, setAttachments] = useState<ScreenshotAttachment[]>([])
   const [input, setInput] = useState("")
   const [busy, setBusy] = useState(false)
+  const [showCompanionDialog, setShowCompanionDialog] = useState(false)
   const [phase, setPhase] = useState("")
   const [sessionTitle, setSessionTitle] = useState("新建解题会话")
   const [voiceActive, setVoiceActive] = useState(false)
@@ -650,8 +653,12 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
       void hydrateStoredMessages(session.messages).then(setMessages).catch(() => setMessages([]))
     }
     window.addEventListener("chat-session-selected", onChatSessionSelected)
+    const unsubscribeCompanionSession = window.electronAPI.onCompanionSessionSelected((session) => {
+      window.dispatchEvent(new CustomEvent("chat-session-selected", { detail: session }))
+    })
     return () => {
       window.removeEventListener("chat-session-selected", onChatSessionSelected)
+      unsubscribeCompanionSession()
     }
   }, [busy, showToast])
 
@@ -937,6 +944,9 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
           <button className="chat-icon-button" title="历史会话" onClick={() => window.dispatchEvent(new Event("open-chat-sessions"))}>
             <History size={15} />
           </button>
+          <button className="chat-icon-button" title="手机浏览器伴随端" onClick={() => setShowCompanionDialog(true)}>
+            <Smartphone size={15} />
+          </button>
           <button
             className={`chat-icon-button ${voiceActive ? "voice-active" : ""}`}
             title={`${voiceActive ? "停止" : "开始"}线上会议语音识别`}
@@ -1156,6 +1166,7 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
           </div>
         </div>
       </footer>
+      {showCompanionDialog && <CompanionDialog onClose={() => setShowCompanionDialog(false)} />}
     </main>
   )
 }

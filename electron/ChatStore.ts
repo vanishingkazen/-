@@ -204,6 +204,22 @@ export class ChatStore {
     return path.join(path.dirname(this.filePath), "chat-attachments", safeStorageComponent(sessionId))
   }
 
+  public isAttachmentPath(sessionId: string, filePath: string): boolean {
+    if (!path.isAbsolute(filePath)) return false
+    try {
+      const directory = fs.realpathSync(this.getAttachmentDirectory(sessionId))
+      const candidate = fs.realpathSync(filePath)
+      const relative = path.relative(directory, candidate)
+      return Boolean(relative) &&
+        !relative.startsWith(`..${path.sep}`) &&
+        relative !== ".." &&
+        !path.isAbsolute(relative) &&
+        fs.statSync(candidate).isFile()
+    } catch {
+      return false
+    }
+  }
+
   public copyAttachments(sessionId: string, messageId: string, images: ChatAttachment[]): ChatAttachment[] {
     const directory = this.getAttachmentDirectory(sessionId)
     return images.map((image, index) => {

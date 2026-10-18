@@ -12,6 +12,7 @@ import { ensureInterviewContextFile } from "./InterviewContextHelper"
 import { VoiceRecognitionHelper } from "./VoiceRecognitionHelper"
 import { MouseShakeDetector } from "./MouseShakeDetector"
 import { ChatService } from "./ChatService"
+import { CompanionServer } from "./CompanionServer"
 import { installCrashRecovery, requestAppRestart } from "./CrashRecovery"
 import { describeApiUsageTotals } from "./ApiTelemetry"
 import {
@@ -89,6 +90,7 @@ const state = {
   voiceRecognitionHelper: null as VoiceRecognitionHelper | null,
   mouseShakeDetector: null as MouseShakeDetector | null,
   chatService: null as ChatService | null,
+  companionServer: null as CompanionServer | null,
 
   // View and state management
   view: "queue" as AppView,
@@ -102,7 +104,10 @@ const state = {
 // Initialize helpers
 function initializeHelpers() {
   state.screenshotHelper = new ScreenshotHelper(state.view)
-  state.voiceRecognitionHelper = new VoiceRecognitionHelper(getMainWindow)
+  state.voiceRecognitionHelper = new VoiceRecognitionHelper(
+    getMainWindow,
+    (channel, payload) => state.companionServer?.publish(channel, payload)
+  )
   state.processingHelper = new ProcessingHelper({
     getScreenshotHelper,
     getMainWindow,
@@ -123,6 +128,7 @@ function initializeHelpers() {
 
   state.chatService = new ChatService({
     getMainWindow,
+    onEvent: (channel, payload) => state.companionServer?.publish(channel, payload),
     onMessageAccepted: ({ acceptedImagePaths, persistedImagePaths }) => {
       state.screenshotHelper?.consumeScreenshots(
         acceptedImagePaths,
@@ -167,8 +173,34 @@ function initializeHelpers() {
       toggleMainWindow()
     }
   })
+  state.companionServer = new CompanionServer({
+    getChatService: () => state.chatService,
+    getVoiceRecognitionHelper: () => state.voiceRecognitionHelper,
+    getScreenshotPaths: () => state.view === "queue" ? getScreenshotQueue() : getExtraScreenshotQueue(),
+    takeScreenshot,
+    getImagePreview,
+    deleteScreenshot,
+    notifyScreenshotTaken: (filepath, preview) => {
+      const mainWindow = getMainWindow()
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("screenshot-taken", { path: filepath, preview })
+      }
+    },
+    notifySessionSelected: (session) => {
+      const mainWindow = getMainWindow()
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("companion-session-selected", session)
+      }
+    },
+    getStaticDirectory: () => path.resolve(__dirname, "../dist/mobile")
+  })
+  state.companionServer.onStatusChange((status) => {
+    const mainWindow = getMainWindow()
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("companion-status", status)
+  })
   app.once("will-quit", () => {
     state.mouseShakeDetector?.stop()
+    void state.companionServer?.stop()
   })
 }
 
@@ -626,7 +658,8 @@ async function initializeApp() {
           )
         ),
       moveWindowUp: () => moveWindowVertical((y) => y - state.step),
-      moveWindowDown: () => moveWindowVertical((y) => y + state.step)
+      moveWindowDown: () => moveWindowVertical((y) => y + state.step),
+      companionServer: state.companionServer
     })
     state.shortcutsHelper?.registerGlobalShortcuts()
     await createWindow()
@@ -732,16 +765,19 @@ function clearQueues(): void {
   state.screenshotHelper?.clearQueues()
   state.problemInfo = null
   setView("queue")
+  state.companionServer?.publish("refresh")
 }
 
 async function takeScreenshot(): Promise<string> {
   if (!state.mainWindow) throw new Error("No main window available")
-  return (
+  const screenshotPath = await (
     state.screenshotHelper?.takeScreenshot(
       () => hideMainWindow(),
       () => showMainWindow()
     ) || ""
   )
+  if (screenshotPath) state.companionServer?.publish("refresh")
+  return screenshotPath
 }
 
 async function getImagePreview(filepath: string): Promise<string> {
@@ -751,12 +787,14 @@ async function getImagePreview(filepath: string): Promise<string> {
 async function deleteScreenshot(
   path: string
 ): Promise<{ success: boolean; error?: string }> {
-  return (
+  const result = await (
     state.screenshotHelper?.deleteScreenshot(path) || {
       success: false,
       error: "Screenshot helper not initialized"
     }
   )
+  if (result.success) state.companionServer?.publish("refresh")
+  return result
 }
 
 function setHasDebugged(value: boolean): void {

@@ -66,6 +66,21 @@ const electronAPI = {
       ipcRenderer.removeListener("reset-view", subscription)
     }
   },
+  onCompanionStatus: (callback: (status: unknown) => void) => {
+    const subscription = (_event: IpcRendererEvent, status: unknown) => callback(status)
+    ipcRenderer.on("companion-status", subscription)
+    return () => ipcRenderer.removeListener("companion-status", subscription)
+  },
+  onCompanionSessionSelected: (callback: (session: unknown) => void) => {
+    const subscription = (_event: IpcRendererEvent, selected: unknown) => callback(selected)
+    ipcRenderer.on("companion-session-selected", subscription)
+    return () => ipcRenderer.removeListener("companion-session-selected", subscription)
+  },
+  getCompanionStatus: () => ipcRenderer.invoke("companion-get-status"),
+  startCompanion: () => ipcRenderer.invoke("companion-start"),
+  stopCompanion: () => ipcRenderer.invoke("companion-stop"),
+  refreshCompanionPairing: () => ipcRenderer.invoke("companion-refresh-pairing"),
+  disconnectCompanionPhone: () => ipcRenderer.invoke("companion-disconnect-phone"),
 
 
 

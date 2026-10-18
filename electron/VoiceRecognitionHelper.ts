@@ -11,6 +11,7 @@ interface VoiceSession {
   socket: WebSocket | null
   taskId: string | null
   finalTranscript: string
+  partialTranscript: string
   segments: TranscriptSegment[]
   state: VoiceState
 }
@@ -76,11 +77,14 @@ const bigramCoverage = (needle: string, haystack: string): number => {
 
 export class VoiceRecognitionHelper {
   private readonly sessions: Record<VoiceSource, VoiceSession> = {
-    microphone: { socket: null, taskId: null, finalTranscript: "", segments: [], state: "idle" },
-    system: { socket: null, taskId: null, finalTranscript: "", segments: [], state: "idle" }
+    microphone: { socket: null, taskId: null, finalTranscript: "", partialTranscript: "", segments: [], state: "idle" },
+    system: { socket: null, taskId: null, finalTranscript: "", partialTranscript: "", segments: [], state: "idle" }
   }
 
-  constructor(private readonly getMainWindow: () => BrowserWindow | null) {}
+  constructor(
+    private readonly getMainWindow: () => BrowserWindow | null,
+    private readonly onEvent?: (channel: string, payload?: unknown) => void
+  ) {}
 
   public getTranscript(source?: VoiceSource): string {
     if (source) return this.sessions[source].finalTranscript.trim()
@@ -96,9 +100,25 @@ export class VoiceRecognitionHelper {
     const sources: VoiceSource[] = source ? [source] : ["microphone", "system"]
     for (const item of sources) {
       this.sessions[item].finalTranscript = ""
+      this.sessions[item].partialTranscript = ""
       this.sessions[item].segments = []
       this.send("voice-context-cleared", { source: item })
     }
+  }
+
+  public getLiveSnapshot(): {
+    system: { state: VoiceState; message: string; transcript: string; partialTranscript: string }
+    microphone: { state: VoiceState; message: string; transcript: string; partialTranscript: string }
+  } {
+    const snapshot = (source: VoiceSource) => ({
+      state: this.sessions[source].state,
+      message: this.sessions[source].state === "listening"
+        ? source === "system" ? "正在听会议系统音频" : "正在听笔记本麦克风"
+        : "",
+      transcript: this.sessions[source].finalTranscript,
+      partialTranscript: this.sessions[source].partialTranscript
+    })
+    return { system: snapshot("system"), microphone: snapshot("microphone") }
   }
 
   public getConversationTranscript(): VoiceConversationTranscript {
@@ -379,10 +399,12 @@ export class VoiceRecognitionHelper {
         if (!sentence || sentence.heartbeat) return eventName
         const text = sentence.text?.trim() || ""
         if (!sentence.sentence_end) {
+          this.sessions[source].partialTranscript = text
           this.send("voice-transcript-partial", { source, text })
         } else if (text) {
           const session = this.sessions[source]
           const completedAt = Date.now()
+          session.partialTranscript = ""
           session.finalTranscript = [session.finalTranscript, text].filter(Boolean).join("\n")
           session.segments.push({ text, completedAt })
           this.send("voice-transcript-final", {
@@ -404,12 +426,14 @@ export class VoiceRecognitionHelper {
 
   private setState(source: VoiceSource, state: VoiceState, message: string): void {
     this.sessions[source].state = state
+    if (state !== "listening") this.sessions[source].partialTranscript = ""
     this.send("voice-status", { source, state, message })
   }
 
   private send(channel: string, data?: unknown): void {
     const window = this.getMainWindow()
     if (window && !window.isDestroyed()) window.webContents.send(channel, data)
+    this.onEvent?.(channel, data)
   }
 
   private async closeSocket(source: VoiceSource): Promise<void> {
