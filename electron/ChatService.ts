@@ -422,11 +422,12 @@ export class ChatService {
       config,
       system,
       history,
-      openaiMessages:
-        config.apiProvider === "openai-compatible"
-          ? await this.buildOpenAIMessages(session, history, system, config, signal)
-          : [],
+      openaiMessages: [],
+      prepareOpenAIMessages: (route, attemptSignal) => this.buildOpenAIMessages(session, history, system, route, attemptSignal),
       signal,
+      onFallback: () => {
+        this.emit("chat-thinking", { requestId, sessionId: session.id, reasoningChars: 0, message: "主线路暂不可用，正在使用备用线路…" })
+      },
       onStream: (content) => {
         this.emit("chat-stream", {
           requestId,

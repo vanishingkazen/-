@@ -761,7 +761,7 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
       }),
       window.electronAPI.onChatThinking((data) => {
         if (data.sessionId !== sessionIdRef.current || activeAssistantId.current !== data.requestId) return
-        setPhase(`模型思考中…（已思考 ${data.reasoningChars} 字）`)
+        setPhase(data.message || `模型思考中…（已思考 ${data.reasoningChars} 字）`)
       }),
       window.electronAPI.onChatSuccess((data) => {
         if (data.sessionId !== sessionIdRef.current || activeAssistantId.current !== data.requestId) return
@@ -935,7 +935,7 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
             <Code2 size={15} className="text-black/[0.55]" />
             <span className="truncate">{sessionTitle}</span>
           </div>
-          <div className="mt-0.5 text-[10px] text-black/[0.35]">快捷键优先 · {COMMAND_KEY} + H 截图 · {COMMAND_KEY} + Enter 按内置规则执行</div>
+          <div className="mt-0.5 text-[10px] text-black/[0.35]">快捷键优先 · {COMMAND_KEY} + H 采集图片 · {COMMAND_KEY} + Enter 按内置规则执行</div>
         </div>
         <div className="flex items-center gap-1">
           <span className="chat-auto-language" title="编程语言会根据截图自动识别">
@@ -944,7 +944,7 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
           <button className="chat-icon-button" title="历史会话" onClick={() => window.dispatchEvent(new Event("open-chat-sessions"))}>
             <History size={15} />
           </button>
-          <button className="chat-icon-button" title="手机浏览器伴随端" onClick={() => setShowCompanionDialog(true)}>
+          <button className="chat-icon-button" title="局域网外设：网页显示与 iOS 相机" onClick={() => setShowCompanionDialog(true)}>
             <Smartphone size={15} />
           </button>
           <button
@@ -988,8 +988,8 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
         {messages.length === 0 && !busy && !hasVoiceContext ? (
           <div className="chat-empty-state">
             <div className="chat-empty-icon"><Code2 size={25} /></div>
-            <h1>从截图开始，或者直接输入问题</h1>
-            <p>截图会直接发送给视觉模型，由模型判断题型和语言并完成解题。</p>
+            <h1>采集一张图片，或者直接输入问题</h1>
+            <p>支持电脑截图或局域网相机拍摄，添加图片后即可提交分析。</p>
             <div className="chat-empty-shortcuts">
               <span><kbd>{COMMAND_KEY} H</kbd> 截图</span>
               <span><kbd>{COMMAND_KEY} Enter</kbd> 执行当前阶段</span>
@@ -1125,8 +1125,8 @@ const Chat: React.FC<ChatProps> = ({ currentLanguage }) => {
           />
           <div className="chat-composer-toolbar">
             <div className="flex items-center gap-1">
-              <button className="chat-tool-button" onClick={takeScreenshot} disabled={busy} title={`截图（${COMMAND_KEY} + H）`}>
-                <Camera size={15} /><span>截图</span>
+              <button className="chat-tool-button" onClick={takeScreenshot} disabled={busy} title={`按外设设置中的图片来源采集（${COMMAND_KEY} + H）`}>
+                <Camera size={15} /><span>采集图片</span>
               </button>
               <button
                 className={`chat-tool-button ${voiceActive ? "voice-active" : ""}`}

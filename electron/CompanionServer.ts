@@ -8,7 +8,7 @@ import { PhoneCameraRequests } from "./capture/PhoneCameraRequests"
 import { configHelper } from "./ConfigHelper"
 import type { ChatAttachment, ChatService } from "./ChatService"
 import type { VoiceRecognitionHelper } from "./VoiceRecognitionHelper"
-import type { CompanionImage, CompanionMessage, CompanionSessionSummary, CompanionSnapshot, CompanionStatus } from "./CompanionTypes"
+import type { CompanionImage, CompanionMessage, CompanionSessionSummary, CompanionSnapshot, CompanionStatus, PeripheralRole, PeripheralStatus } from "./CompanionTypes"
 
 const PAIRING_TTL_MS = 2 * 60 * 1000
 const MAX_JSON_BODY_BYTES = 64 * 1024
@@ -135,7 +135,8 @@ export class CompanionServer {
   private server: Server | null = null
   private sockets: WebSocketServer | null = null
   private clients = new Set<WebSocket>()
-  private pairing: PairingState | null = null
+  private pairings: Record<PeripheralRole, PairingState | null> = { display: null, camera: null }
+  private clientRoles = new Map<WebSocket, PeripheralRole>()
   private port = 0
   private addresses: Array<{ label: string; url: string }> = []
   private allowedNetworks: Array<{ address: string; netmask: string }> = []
@@ -149,22 +150,46 @@ export class CompanionServer {
     this.statusListener = listener
   }
 
-  public getStatus(): CompanionStatus {
+  private peripheralStatus(role: PeripheralRole): PeripheralStatus {
+    const pairing = this.pairings[role]
     return {
-      captureSource: this.captureSource,
-      cameraReady: this.cameraReady && this.cameraClient?.readyState === WebSocket.OPEN,
-      running: Boolean(this.server),
-      connected: [...this.clients].some((client) => client.readyState === WebSocket.OPEN),
-      paired: Boolean(this.pairing?.sessionToken),
-      addresses: this.addresses,
-      ...(this.pairing?.sessionToken ? {} : this.pairing ? {
-        pairingExpiresAt: this.pairing.expiresAt,
+      paired: Boolean(pairing?.sessionToken),
+      connected: [...this.clients].some((client) => this.clientRoles.get(client) === role && client.readyState === WebSocket.OPEN),
+      ...(!pairing?.sessionToken && pairing ? {
+        pairingExpiresAt: pairing.expiresAt,
         pairingUrls: this.addresses.map(({ label, url }) => ({
           label,
-          url: `${url}#${this.pairing?.pairingToken || ""}`
+          url: `${url}${role === "camera" ? "?role=camera" : ""}#${pairing.pairingToken}`
         }))
       } : {})
     }
+  }
+
+  public getStatus(): CompanionStatus {
+    const display = this.peripheralStatus("display")
+    return {
+      // Legacy paired/connected fields describe the web display, including overlay policy.
+      ...display,
+      display,
+      camera: this.peripheralStatus("camera"),
+      captureSource: this.captureSource,
+      cameraReady: this.cameraReady && this.cameraClient?.readyState === WebSocket.OPEN,
+      running: Boolean(this.server),
+      addresses: this.addresses
+    }
+  }
+
+  private cameraSnapshot(): Record<string, unknown> {
+    return {
+      pendingCount: this.deps.getScreenshotPaths().length,
+      captureSource: this.captureSource,
+      cameraReady: this.cameraReady && this.cameraClient?.readyState === WebSocket.OPEN
+    }
+  }
+
+  private checkedRole(role: unknown): PeripheralRole {
+    if (role !== "display" && role !== "camera") throw new Error("无效的外设类型")
+    return role
   }
 
   public async start(): Promise<CompanionStatus> {
@@ -240,7 +265,8 @@ export class CompanionServer {
       url: `http://${host}:${this.port}/companion`
     }))
     this.allowedNetworks = localAddresses.map(({ address, netmask }) => ({ address, netmask }))
-    this.createPairingToken()
+    this.createPairingToken("display")
+    this.createPairingToken("camera")
     this.notifyStatus()
     return this.getStatus()
   }
@@ -248,6 +274,7 @@ export class CompanionServer {
   public setCaptureSource(source: unknown): CompanionStatus {
     if (source !== "screen" && source !== "phone") throw new Error("无效的图片来源")
     this.captureSource = source
+    this.broadcast({ type: "refresh" })
     this.notifyStatus()
     return this.getStatus()
   }
@@ -271,32 +298,40 @@ export class CompanionServer {
     return request.result
   }
 
-  public refreshPairing(): CompanionStatus {
-    if (!this.server) throw new Error("手机伴随服务尚未启动")
-    if (this.pairing?.sessionToken) throw new Error("手机已配对，请先断开当前设备")
-    this.createPairingToken()
+  public refreshPairing(value: unknown = "display"): CompanionStatus {
+    const role = this.checkedRole(value)
+    if (!this.server) throw new Error("局域网外设服务尚未启动")
+    if (this.pairings[role]?.sessionToken) throw new Error("该外设已配对，请先断开再重新配对")
+    this.createPairingToken(role)
     this.notifyStatus()
     return this.getStatus()
   }
 
-  public disconnectPhone(): CompanionStatus {
-    this.pairing = null
-    this.cameraRequests.cancel()
-    this.cameraClient = null
-    this.cameraReady = false
+  public disconnectPhone(value: unknown = "display"): CompanionStatus {
+    const role = this.checkedRole(value)
+    this.pairings[role] = null
+    if (role === "camera") {
+      this.cameraRequests.cancel()
+      this.cameraClient = null
+      this.cameraReady = false
+    }
     for (const client of this.clients) {
+      if (this.clientRoles.get(client) !== role) continue
+      this.clients.delete(client)
+      this.clientRoles.delete(client)
       try { client.close(4001, "Pairing revoked") } catch { /* already closed */ }
     }
-    this.clients.clear()
-    if (this.server) this.createPairingToken()
+    if (this.server) this.createPairingToken(role)
     this.notifyStatus()
+    this.broadcast({ type: "refresh" })
     return this.getStatus()
   }
 
   public async stop(): Promise<CompanionStatus> {
     const sockets = this.sockets
     const server = this.server
-    this.pairing = null
+    this.pairings = { display: null, camera: null }
+    this.clientRoles.clear()
     this.cameraRequests.cancel()
     this.cameraClient = null
     this.cameraReady = false
@@ -318,7 +353,7 @@ export class CompanionServer {
   }
 
   public publish(channel: string, payload?: unknown): void {
-    if (!this.pairing?.sessionToken) return
+    if (!this.pairings.display?.sessionToken && !this.pairings.camera?.sessionToken) return
     let event: Record<string, unknown>
     if (channel === "chat-stream" && payload && typeof payload === "object") {
       const value = payload as Record<string, unknown>
@@ -339,8 +374,8 @@ export class CompanionServer {
     this.broadcast(event)
   }
 
-  private createPairingToken(): void {
-    this.pairing = {
+  private createPairingToken(role: PeripheralRole): void {
+    this.pairings[role] = {
       pairingToken: randomToken(),
       expiresAt: Date.now() + PAIRING_TTL_MS,
       sessionToken: null
@@ -364,10 +399,17 @@ export class CompanionServer {
     }
   }
 
-  private isAuthorized(request: IncomingMessage): boolean {
+  private tokenRole(token: string): PeripheralRole | null {
+    for (const role of ["display", "camera"] as const) {
+      const expected = this.pairings[role]?.sessionToken
+      if (expected && safeEqual(token, expected)) return role
+    }
+    return null
+  }
+
+  private authorizedRole(request: IncomingMessage): PeripheralRole | null {
     const auth = request.headers.authorization
-    if (!this.pairing?.sessionToken || typeof auth !== "string" || !auth.startsWith("Bearer ")) return false
-    return safeEqual(auth.slice(7), this.pairing.sessionToken)
+    return typeof auth === "string" && auth.startsWith("Bearer ") ? this.tokenRole(auth.slice(7)) : null
   }
 
   private async handleHttp(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -390,13 +432,19 @@ export class CompanionServer {
       }
       const body = await readJson(request)
       const token = typeof body.token === "string" ? body.token : ""
-      if (!this.pairing || this.pairing.sessionToken || Date.now() > this.pairing.expiresAt || !safeEqual(token, this.pairing.pairingToken)) {
-        sendJson(response, 401, { success: false, error: "配对码已失效或不正确，请在电脑端刷新二维码" })
+      const role = body.role === undefined ? "display" : body.role
+      if (role !== "display" && role !== "camera") {
+        sendJson(response, 400, { success: false, error: "无效的外设类型" })
         return
       }
-      this.pairing.sessionToken = randomToken()
-      this.pairing.pairingToken = ""
-      sendJson(response, 200, { success: true, token: this.pairing.sessionToken })
+      const pairing = this.pairings[role]
+      if (!pairing || pairing.sessionToken || Date.now() > pairing.expiresAt || !safeEqual(token, pairing.pairingToken)) {
+        sendJson(response, 401, { success: false, error: "配对码已失效或类型不匹配，请使用对应外设的二维码" })
+        return
+      }
+      pairing.sessionToken = randomToken()
+      pairing.pairingToken = ""
+      sendJson(response, 200, { success: true, token: pairing.sessionToken, role })
       this.notifyStatus()
       return
     }
@@ -408,8 +456,14 @@ export class CompanionServer {
       const originAllowed = safeRead && !request.headers.origin
         ? true
         : this.isAllowedOrigin(request)
-      if (!originAllowed || !this.isAuthorized(request)) {
+      const role = this.authorizedRole(request)
+      if (!originAllowed || !role) {
         sendJson(response, 401, { success: false, error: "手机尚未配对或授权已撤销" })
+        return
+      }
+      const cameraRoute = requestUrl.pathname.startsWith("/api/camera/")
+      if ((role === "camera") !== cameraRoute) {
+        sendJson(response, 403, { success: false, error: "该外设无权访问此功能" })
         return
       }
       await this.handleApi(method, requestUrl, request, response)
@@ -445,6 +499,10 @@ export class CompanionServer {
   }
 
   private async handleApi(method: string, url: URL, request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (method === "GET" && url.pathname === "/api/camera/state") {
+      sendJson(response, 200, { success: true, state: this.cameraSnapshot() })
+      return
+    }
     if (method === "GET" && url.pathname === "/api/state") {
       sendJson(response, 200, { success: true, state: await this.getSnapshot() })
       return
@@ -512,7 +570,7 @@ export class CompanionServer {
         const context = this.captureContext()
         this.cameraRequests.beginUpload(id, context)
         const auth = request.headers.authorization
-        const valid = () => this.cameraRequests.isValid(id, this.captureContext()) && context === this.captureContext() && auth === `Bearer ${this.pairing?.sessionToken}`
+        const valid = () => this.cameraRequests.isValid(id, this.captureContext()) && context === this.captureContext() && auth === `Bearer ${this.pairings.camera?.sessionToken}`
         const buffer = await new Promise<Buffer>((resolve, reject) => {
           request.setTimeout(15_000, () => request.destroy(new Error("照片上传超时")))
           const chunks: Buffer[] = []
@@ -588,8 +646,10 @@ export class CompanionServer {
           sendJson(response, 200, { success: true, state: await this.getSnapshot() })
           return
         }
+        case "/api/capture":
         case "/api/screenshot": {
-          const screenshotPath = await (this.deps.takeDesktopScreenshot || this.deps.takeScreenshot)()
+          const capture = url.pathname === "/api/capture" ? this.deps.takeScreenshot : (this.deps.takeDesktopScreenshot || this.deps.takeScreenshot)
+          const screenshotPath = await capture()
           const preview = await this.deps.getImagePreview(screenshotPath)
           this.deps.notifyScreenshotTaken(screenshotPath, preview)
           this.broadcast({ type: "refresh" })
@@ -699,6 +759,8 @@ export class CompanionServer {
     }))
     const voice = this.deps.getVoiceRecognitionHelper()?.getLiveSnapshot()
     return {
+      captureSource: this.captureSource,
+      cameraReady: this.cameraReady && this.cameraClient?.readyState === WebSocket.OPEN,
       busy: service.isBusy(),
       currentSessionId: session.id,
       sessions,
@@ -736,6 +798,18 @@ export class CompanionServer {
       if (client.readyState === WebSocket.OPEN) client.close(4003, "Authentication timeout")
     }, 5_000)
     let authenticated = false
+    const cleanup = () => {
+      clearTimeout(authTimeout)
+      if (this.cameraClient === client) {
+        this.cameraClient = null
+        this.cameraReady = false
+        this.cameraRequests.cancel()
+      }
+      this.clients.delete(client)
+      this.clientRoles.delete(client)
+      this.notifyStatus()
+      this.broadcast({ type: "refresh" })
+    }
     client.once("message", async (raw) => {
       let payload: Record<string, unknown>
       try {
@@ -746,70 +820,72 @@ export class CompanionServer {
         client.close(4002, "Invalid auth message")
         return
       }
-      if (payload.type !== "auth" || typeof payload.token !== "string" || !this.pairing?.sessionToken || !safeEqual(payload.token, this.pairing.sessionToken)) {
+      const role = typeof payload.token === "string" ? this.tokenRole(payload.token) : null
+      if (payload.type !== "auth" || !role || (payload.role !== undefined && payload.role !== role)) {
         client.close(4003, "Unauthorized")
         return
       }
       authenticated = true
-      this.cameraRequests.cancel()
-      this.cameraClient = null
-      this.cameraReady = false
       clearTimeout(authTimeout)
+      // A reconnect replaces only the same peripheral role.
       for (const other of this.clients) {
-        if (other !== client) other.close(4001, "Replaced by reconnect")
+        if (this.clientRoles.get(other) !== role) continue
+        this.clients.delete(other)
+        this.clientRoles.delete(other)
+        other.close(4001, "Replaced by reconnect")
+      }
+      if (role === "camera") {
+        this.cameraRequests.cancel()
+        this.cameraClient = client
+        this.cameraReady = false
       }
       this.clients.add(client)
+      this.clientRoles.set(client, role)
       try {
-        client.send(JSON.stringify({ type: "snapshot", state: await this.getSnapshot() }))
+        const event = role === "camera"
+          ? { type: "camera.snapshot", state: this.cameraSnapshot() }
+          : { type: "snapshot", state: await this.getSnapshot() }
+        if (client.readyState !== WebSocket.OPEN || this.clientRoles.get(client) !== role) return
+        client.send(JSON.stringify(event))
       } catch {
-        client.close(1011, "Unable to load session")
-        this.clients.delete(client)
+        client.close(1011, "Unable to load peripheral state")
+        cleanup()
         return
       }
       this.notifyStatus()
     })
     client.on("message", (raw) => {
-      if (!authenticated) return
+      if (!authenticated || !this.clientRoles.has(client)) return
       let payload: Record<string, unknown>
       try {
         const parsed: unknown = JSON.parse(String(raw))
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return
         payload = parsed as Record<string, unknown>
       } catch { return }
-      if (payload.type === "camera.ready") {
-        this.cameraClient = client
-        this.cameraReady = payload.ready === true
-        if (!this.cameraReady) this.cameraRequests.cancel()
+      if (payload.type === "camera.ready" && this.clientRoles.get(client) === "camera") {
+        const ready = payload.ready === true
+        const changed = ready !== this.cameraReady
+        this.cameraReady = ready
+        if (!ready) this.cameraRequests.cancel()
         this.notifyStatus()
+        if (changed) this.broadcast({ type: "refresh" })
       }
       if (payload.type === "capture.failed" && client === this.cameraClient && typeof payload.requestId === "string") {
-        this.cameraRequests.fail(payload.requestId, "手机拍摄失败，请检查相机权限并重试")
+        this.cameraRequests.fail(payload.requestId, "相机拍摄失败，请检查权限并重试")
       }
       if (payload.type === "ping") client.send(JSON.stringify({ type: "pong", at: Date.now() }))
     })
-    client.on("close", () => {
-      if (this.cameraClient === client) {
-        this.cameraClient = null
-        this.cameraReady = false
-        this.cameraRequests.cancel()
-      }
-      clearTimeout(authTimeout)
-      this.clients.delete(client)
-      this.notifyStatus()
-    })
-    client.on("error", () => {
-      clearTimeout(authTimeout)
-      this.clients.delete(client)
-      this.notifyStatus()
-    })
+    client.on("close", cleanup)
+    client.on("error", () => { cleanup(); client.terminate() })
   }
 
   private broadcast(event: Record<string, unknown>): void {
-    const serialized = JSON.stringify(event)
     for (const client of this.clients) {
-      if (client.readyState === WebSocket.OPEN) {
-        try { client.send(serialized) } catch { /* connection will be removed on close */ }
-      }
+      if (client.readyState !== WebSocket.OPEN) continue
+      const role = this.clientRoles.get(client)
+      if (role === "camera" && event.type !== "refresh") continue
+      const value = role === "camera" ? { type: "camera.snapshot", state: this.cameraSnapshot() } : event
+      try { client.send(JSON.stringify(value)) } catch { /* removed on close */ }
     }
   }
 

@@ -4,25 +4,31 @@
 
 ## 配对与认证
 
-二维码内容：`http://<LAN-IP>:<port>/companion#<one-time-token>`，现有配对码有效期两分钟。
+相机二维码：`http://<LAN-IP>:<port>/companion?role=camera#<one-time-token>`。网页显示端使用 `/companion#<one-time-token>`；令牌独立，配对码有效期两分钟。
 
-`POST /api/pair`，JSON `{ "token": "<one-time-token>" }`，响应 `{ "success": true, "token": "<session-token>" }`。
+`POST /api/pair`，JSON `{ "token": "<one-time-token>", "role": "camera" }`，响应 `{ "success": true, "token": "<session-token>", "role": "camera" }`。
 
 原生 App 沿用现有来源规则，发送 `Origin: http://<LAN-IP>:<port>`；API 请求还发送 `Authorization: Bearer <session-token>`。Origin 只是网页来源检查，设备身份由配对令牌验证。
 
 WebSocket：`ws://<LAN-IP>:<port>/api/events`，同样设置 Origin，连接后五秒内发送：
 
 ```json
-{ "type": "auth", "token": "<session-token>" }
+{ "type": "auth", "token": "<session-token>", "role": "camera" }
 ```
 
-收到现有 `snapshot` 事件后，发送相机能力状态；前后台或相机会话变化时更新：
+收到 `camera.snapshot` 事件（仅含附件数量、采集来源和相机就绪状态，不含聊天内容）后，发送相机能力状态；前后台或相机会话变化时更新：
 
 ```json
 { "type": "camera.ready", "ready": true }
 ```
 
-保活沿用 `ping` / `pong`。当前仅支持一个已配对手机连接。
+保活沿用 `ping` / `pong`。每种角色支持一个在线连接，两种角色可以同时在线。相机令牌仅允许 `/api/camera/*`，网页显示令牌不能访问相机接口或报告相机就绪。
+
+## 自动重连
+
+iOS 前台断线按 1、2、4、8、15 秒退避，随后每 15 秒重试；网络恢复或返回前台立即连接。每 8 秒发送 ping；首次响应超时 12 秒、已连接响应超时 25 秒会重建连接。重连后重新报告相机就绪。
+
+关闭码 4001（撤销/替换）、4003（未授权）或 HTTP 401/403 停止自动重试。进入后台主动断开；未完成请求取消，不自动补传。电脑服务重启或地址改变需重新配对。相机重连不替换网页显示端。
 
 ## 电脑遥控拍照
 
@@ -69,8 +75,8 @@ WebSocket：`ws://<LAN-IP>:<port>/api/events`，同样设置 Origin，连接后�
 
 ## 显式电脑截图
 
-App 的「电脑截图」调用原有 `POST /api/screenshot`。此接口始终截取电脑屏幕，不跟随桌面采集来源，避免手机等待 HTTP 响应时又被要求执行同一个拍照请求。
+网页显示端的 `POST /api/capture` 使用电脑所选来源。保留 `POST /api/screenshot` 显式截取电脑屏幕；相机端不调用这两个接口。
 
 ## 后续协议升级
 
-正式版本应增加 HTTPS/WSS 与证书绑定、独立设备身份、协议版本/能力协商，并在需要原生相机与网页同时在线时拆分设备连接与查看连接。当前版本不声明这些能力已实现。
+正式版本应增加 HTTPS/WSS 与证书绑定、独立设备身份、协议版本/能力协商，以及同角色多设备选择。当前已拆分网页显示与原生相机角色，不支持同角色多个设备同时在线。

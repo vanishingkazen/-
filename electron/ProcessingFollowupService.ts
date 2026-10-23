@@ -1,3 +1,4 @@
+import { ChatProvider } from "./ChatProvider"
 import type { BrowserWindow } from "electron"
 import { OpenAI } from "openai"
 import Anthropic from "@anthropic-ai/sdk"
@@ -171,7 +172,19 @@ ${content}
     try {
       let responseContent = ""
 
-      if (this.solutionOpenAIClient || config.apiProvider === "openai-compatible") {
+      if (config.fallbackEnabled) {
+        const routeConfig = this.solutionOpenAIClient
+          ? { ...config, apiProvider: "openai-compatible" as const, apiKey: config.solutionApiKey, baseURL: config.solutionBaseURL, extractionModel: config.solutionModel }
+          : { ...config, extractionModel: config.solutionModel };
+        const result = await new ChatProvider().generateReply({
+          config: routeConfig, system: chatSystemPrompt, history: [],
+          openaiMessages: [{ role: "system", content: chatSystemPrompt }, ...priorMessages, { role: "user", content: contextPrompt }],
+          signal: controller.signal, kind: "followup",
+          onStream: (content) => mainWindow.webContents.send("chat-stream", { requestId, content, done: false }),
+          onFallback: () => mainWindow.webContents.send("processing-status", { stage: "followup", requestId, message: "主线路暂不可用，正在使用备用线路…", progress: 20 })
+        });
+        responseContent = result.content;
+      } else if (this.solutionOpenAIClient || config.apiProvider === "openai-compatible") {
 
         const client = this.solutionOpenAIClient || this.openaiClient
         if (!client) throw new Error("解答模型尚未配置")

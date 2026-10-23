@@ -349,7 +349,7 @@ export default function CompanionApp() {
       <main className="companion-pair-screen">
         <div className="companion-pair-card">
           <div className="companion-brand-mark"><MessageSquareText size={24} /></div>
-          <h1>手机伴随端</h1>
+          <h1>网页显示端</h1>
           <p>{error || "正在配对本地会话…"}</p>
           {error && <div className="companion-hint">确认手机和笔记本连接在同一个可信 Wi‑Fi，再重新扫描笔记本上的二维码。</div>}
           <div className="companion-security-note">HTTP 明文传输：对话、截图和语音转写未加密；配对码仅控制访问。只在可信私人 Wi‑Fi 使用。</div>
@@ -364,7 +364,7 @@ export default function CompanionApp() {
         <div className="companion-heading">
           <div className="companion-brand-mark small"><MessageSquareText size={18} /></div>
           <div className="companion-title-wrap">
-            <strong>会议问答</strong>
+            <strong>网页显示端</strong>
             <span className={connected ? "connection good" : "connection"}>
               {connected ? <Wifi size={12} /> : <WifiOff size={12} />}{connectionLabel}
             </span>
@@ -421,7 +421,7 @@ export default function CompanionApp() {
 
           {snapshot.pendingScreenshots.length > 0 && (
             <section className="pending-screenshots">
-              <div className="section-caption">待发送截图 · {snapshot.pendingScreenshots.length}</div>
+              <div className="section-caption">待发送图片 · {snapshot.pendingScreenshots.length}</div>
               <div className="pending-image-list">
                 {snapshot.pendingScreenshots.map((image) => (
                   <div className="pending-image" key={image.id}>
@@ -445,12 +445,12 @@ export default function CompanionApp() {
                   void send()
                 }
               }}
-              placeholder={snapshot.pendingScreenshots.length ? "补充问题，或直接发送截图…" : "输入会议问题或追问…"}
+              placeholder={snapshot.pendingScreenshots.length ? "补充问题，或直接发送图片…" : "输入会议问题或追问…"}
               rows={2}
               maxLength={20_000}
             />
             <div className="composer-actions">
-              <button className="secondary-action" disabled={requestBusy} onClick={() => void doAction("/api/screenshot")}><Camera size={17} /><span>笔记本截图</span></button>
+              <button className="secondary-action" disabled={requestBusy} onClick={() => void doAction("/api/capture")}><Camera size={17} /><span>{snapshot?.captureSource === "phone" ? "相机拍照" : "电脑截图"}</span></button>
               <div className="composer-spacer" />
               {requestBusy ? (
                 <button className="stop-action" onClick={() => void doAction("/api/chat/cancel")} title="停止回答"><X size={17} /></button>
@@ -458,7 +458,7 @@ export default function CompanionApp() {
                 <button className="send-action" disabled={!draft.trim() && snapshot.pendingScreenshots.length === 0} onClick={() => void send()} title="发送"><Send size={17} /></button>
               )}
             </div>
-            <div className="keyboard-hint">笔记本仍可使用 Cmd+Enter 提交截图问题</div>
+            <div className="keyboard-hint">笔记本仍可使用 Cmd+Enter 提交图片问题</div>
           </footer>
         </>
       )}

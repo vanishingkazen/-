@@ -1,3 +1,4 @@
+import { ChatProvider } from "./ChatProvider"
 import type { BrowserWindow } from "electron"
 import { configHelper, type Config } from "./ConfigHelper"
 import type { ProblemInfo } from "./contracts"
@@ -123,7 +124,22 @@ ${basicCodeForDebugging}
       
       let debugContent = "";
       
-      if (config.apiProvider === "openai-compatible") {
+      if (config.fallbackEnabled) {
+        const messages = [
+          { role: "system" as const, content: debuggingInstructions },
+          { role: "user" as const, content: [
+            { type: "text" as const, text: debuggingRequest },
+            ...imageDataList.map((data) => ({ type: "image_url" as const, image_url: { url: "data:image/png;base64," + data } }))
+          ] }
+        ];
+        const result = await new ChatProvider().generateReply({
+          config: { ...config, extractionModel: config.debuggingModel, streamingEnabled: false, maxOutputTokens: this.getMaxOutputTokens(config) },
+          system: debuggingInstructions, history: [], openaiMessages: messages,
+          signal, kind: "debug",
+          onFallback: () => mainWindow?.webContents.send("processing-status", { message: "主线路暂不可用，正在使用备用线路…", progress: 60 })
+        });
+        debugContent = result.content;
+      } else if (config.apiProvider === "openai-compatible") {
         if (!this.openaiClient) {
           return {
             success: false,

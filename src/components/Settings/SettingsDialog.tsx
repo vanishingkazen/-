@@ -1,916 +1,323 @@
-import { useState, useEffect, useRef, type CSSProperties } from "react";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from "../ui/dialog";
-import { Input } from "../ui/input";
-import { Button } from "../ui/button";
-import { useToast } from "../../contexts/toast";
-import { COMMAND_KEY } from "../../utils/platform";
-import { openLogDirectory } from "../../lib/logger";
+import { useState, useEffect, useRef, useId, type CSSProperties, type ReactNode } from "react"
+import { Activity, ArrowRight, Check, CheckCircle2, ChevronDown, CircleHelp, FileText, HardDrive, Keyboard, Loader2, Mic, Monitor, Settings2, ShieldCheck, SlidersHorizontal, Waypoints, X, XCircle } from "lucide-react"
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog"
+import { Input } from "../ui/input"
+import { Button } from "../ui/button"
+import { useToast } from "../../contexts/toast"
+import { COMMAND_KEY } from "../../utils/platform"
+import { openLogDirectory } from "../../lib/logger"
+import type { LLMConnectionTestRequest, LLMConnectionTestResult } from "../../../electron/LLMConnectionTest"
+import { StoragePanel } from "./StoragePanel"
+import "./settings.css"
 
-type APIProvider = "openai-compatible" | "anthropic";
+type APIProvider = "openai-compatible" | "anthropic"
+type Section = "models" | "requests" | "speech" | "appearance" | "storage" | "diagnostics"
+type TestRoute = Omit<LLMConnectionTestRequest, "id">
+const initialDraft = {
+  apiProvider: "openai-compatible" as APIProvider, apiKey: "", baseURL: "", extractionModel: "gpt-4o",
+  solutionApiKey: "", solutionBaseURL: "", solutionModel: "gpt-4o", debuggingModel: "gpt-4o",
+  fallbackEnabled: false, fallbackApiProvider: "openai-compatible" as APIProvider,
+  fallbackApiKey: "", fallbackBaseURL: "", fallbackModel: "", llmTimeoutSeconds: 90,
+  streamingEnabled: true, maxOutputTokens: 65536, contextMessageLimit: 30, contextWindowTokens: 128000,
+  speechApiKey: "", speechWorkspaceId: "", speechRegion: "cn-beijing", speechModel: "qwen-audio-3.0-asr-flash-streaming",
+  interviewContextPath: "", opacity: 1,
+}
+type SettingsDraft = typeof initialDraft
+const sections = [
+  { id: "models" as const, label: "模型线路", icon: Waypoints, caption: "配置主线路与备用服务" },
+  { id: "requests" as const, label: "请求参数", icon: SlidersHorizontal, caption: "控制响应、上下文与输出" },
+  { id: "speech" as const, label: "语音与上下文", icon: Mic, caption: "连接语音识别与个人资料" },
+  { id: "appearance" as const, label: "界面与快捷键", icon: Monitor, caption: "调整显示与查看操作方式" },
+  { id: "storage" as const, label: "存储空间", icon: HardDrive, caption: "查看软件本体以外的本地空间占用" },
+  { id: "diagnostics" as const, label: "诊断", icon: Activity, caption: "定位连接与运行问题" },
+]
+const claudeModels = ["claude-3-7-sonnet-20250219", "claude-3-5-sonnet-20241022", "claude-3-opus-20240229"]
 
-type AIModel = {
-  id: string;
-  name: string;
-  description: string;
-};
-
-type ModelCategory = {
-  key: 'extractionModel' | 'solutionModel' | 'debuggingModel';
-  title: string;
-  description: string;
-  anthropicModels: AIModel[];
-};
-
-// Define available models for each category
-const modelCategories: ModelCategory[] = [
-  {
-    key: 'extractionModel',
-    title: 'Visual Solving (Screenshots)',
-    description: 'Vision model used to analyze screenshots and solve the problem directly',
-    anthropicModels: [
-      {
-        id: "claude-3-7-sonnet-20250219",
-        name: "Claude 3.7 Sonnet",
-        description: "Best overall performance for problem extraction"
-      },
-      {
-        id: "claude-3-5-sonnet-20241022",
-        name: "Claude 3.5 Sonnet",
-        description: "Balanced performance and speed"
-      },
-      {
-        id: "claude-3-opus-20240229",
-        name: "Claude 3 Opus",
-        description: "Top-level intelligence, fluency, and understanding"
-      }
-    ]
-  },
-  {
-    key: 'solutionModel',
-    title: 'Follow-up Chat',
-    description: 'Model used for text follow-up and code discussion',
-    anthropicModels: [
-      {
-        id: "claude-3-7-sonnet-20250219",
-        name: "Claude 3.7 Sonnet",
-        description: "Strong overall performance for coding tasks"
-      },
-      {
-        id: "claude-3-5-sonnet-20241022",
-        name: "Claude 3.5 Sonnet",
-        description: "Balanced performance and speed"
-      },
-      {
-        id: "claude-3-opus-20240229",
-        name: "Claude 3 Opus",
-        description: "Top-level intelligence, fluency, and understanding"
-      }
-    ]
-  },
-  {
-    key: 'debuggingModel',
-    title: 'Debugging',
-    description: 'Model used to debug and improve solutions',
-    anthropicModels: [
-      {
-        id: "claude-3-7-sonnet-20250219",
-        name: "Claude 3.7 Sonnet",
-        description: "Best for analyzing code and error messages"
-      },
-      {
-        id: "claude-3-5-sonnet-20241022",
-        name: "Claude 3.5 Sonnet",
-        description: "Balanced performance and speed"
-      },
-      {
-        id: "claude-3-opus-20240229",
-        name: "Claude 3 Opus",
-        description: "Top-level intelligence, fluency, and understanding"
-      }
-    ]
-  }
-];
-
-interface SettingsDialogProps {
-  open?: boolean;
-  onOpenChange?: (open: boolean) => void;
+function Field({ label, hint, children, className = "" }: { label: string; hint?: string; children: ReactNode; className?: string }) {
+  const id = useId()
+  return <div className={"settings-field " + className}>
+    <div id={id} className="settings-label">{label}</div>
+    <div role="group" aria-labelledby={id}>{children}</div>
+    {hint && <p className="settings-hint">{hint}</p>}
+  </div>
 }
 
-export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDialogProps) {
-  const [open, setOpen] = useState(externalOpen || false);
-  const [apiKey, setApiKey] = useState("");
-  const [apiProvider, setApiProvider] = useState<APIProvider>("openai-compatible");
-  const [baseURL, setBaseURL] = useState("");
-  const [extractionModel, setExtractionModel] = useState("gpt-4o");
-  const [solutionApiKey, setSolutionApiKey] = useState("");
-  const [solutionBaseURL, setSolutionBaseURL] = useState("");
-  const [solutionModel, setSolutionModel] = useState("gpt-4o");
-  const [debuggingModel, setDebuggingModel] = useState("gpt-4o");
-  const [streamingEnabled, setStreamingEnabled] = useState(true);
-  const [maxOutputTokens, setMaxOutputTokens] = useState(65536);
-  const [contextMessageLimit, setContextMessageLimit] = useState(30);
-  const [contextWindowTokens, setContextWindowTokens] = useState(128000);
-  const [opacity, setOpacity] = useState(1);
-  const savedOpacityRef = useRef(1);
-  const [interviewContextPath, setInterviewContextPath] = useState("");
-  const [logPath, setLogPath] = useState("");
-  const [speechApiKey, setSpeechApiKey] = useState("");
-  const [speechWorkspaceId, setSpeechWorkspaceId] = useState("");
-  const [speechRegion, setSpeechRegion] = useState("cn-beijing");
-  const [speechModel, setSpeechModel] = useState("qwen-audio-3.0-asr-flash-streaming");
-  const [isLoading, setIsLoading] = useState(false);
-  const { showToast } = useToast();
+function Toggle({ checked, onChange, label, description }: { checked: boolean; onChange: (value: boolean) => void; label: string; description?: string }) {
+  return <div className="settings-toggle-row">
+    <div><div className="settings-label">{label}</div>{description && <p className="settings-hint">{description}</p>}</div>
+    <button type="button" role="switch" aria-label={label} aria-checked={checked} onClick={() => onChange(!checked)} className={"settings-switch " + (checked ? "is-on" : "")}><span /></button>
+  </div>
+}
 
-  // Sync with external open state
+function Card({ title, description, children, accessory, compact = false }: { title: string; description?: string; children: ReactNode; accessory?: ReactNode; compact?: boolean }) {
+  return <section className={"settings-card" + (compact ? " settings-route-card" : "")}>
+    <div className="settings-card-heading"><div><h3>{title}</h3>{description && <p>{description}</p>}</div>{accessory}</div>
+    {children}
+  </section>
+}
+
+function ProviderSelect({ value, onChange }: { value: APIProvider; onChange: (value: APIProvider) => void }) {
+  return <select className="settings-control" aria-label="接口协议" value={value} onChange={(event) => onChange(event.target.value as APIProvider)}>
+    <option value="openai-compatible">OpenAI 兼容接口</option><option value="anthropic">Anthropic 官方接口</option>
+  </select>
+}
+
+function useConnectionTest(open: boolean, route: TestRoute) {
+  const [state, setState] = useState<{ pending: boolean; result?: LLMConnectionTestResult }>({ pending: false })
+  const active = useRef<string | null>(null)
+  // Only a private, in-memory draft fingerprint; never logged or persisted.
+  const signature = JSON.stringify(route)
   useEffect(() => {
-    if (externalOpen !== undefined) {
-      setOpen(externalOpen);
-    }
-  }, [externalOpen]);
-
-  // Handle open state changes
-  const handleOpenChange = (newOpen: boolean) => {
-    if (!newOpen) {
-      void window.electronAPI.setOpacity(savedOpacityRef.current);
-    }
-    setOpen(newOpen);
-    // Only call onOpenChange when there's actually a change
-    if (onOpenChange && newOpen !== externalOpen) {
-      onOpenChange(newOpen);
-    }
-  };
-  
-  // Load current config on dialog open
-  useEffect(() => {
-    if (open) {
-      setIsLoading(true);
-      interface Config {
-        apiKey?: string;
-        apiProvider?: APIProvider;
-        baseURL?: string;
-        extractionModel?: string;
-        solutionApiKey?: string;
-        solutionBaseURL?: string;
-        solutionModel?: string;
-        debuggingModel?: string;
-        streamingEnabled?: boolean;
-        maxOutputTokens?: number;
-        contextMessageLimit?: number;
-        contextWindowTokens?: number;
-        opacity?: number;
-        interviewContextPath?: string;
-        speechApiKey?: string;
-        speechWorkspaceId?: string;
-        speechRegion?: string;
-        speechModel?: string;
-      }
-
-      window.electronAPI
-        .getConfig()
-        .then((config: Config) => {
-          setApiKey(config.apiKey || "");
-          setApiProvider(config.apiProvider || "openai-compatible");
-          setBaseURL(config.baseURL || "");
-          setExtractionModel(config.extractionModel || "gpt-4o");
-          setSolutionApiKey(config.solutionApiKey || "");
-          setSolutionBaseURL(config.solutionBaseURL || "");
-          setSolutionModel(config.solutionModel || "gpt-4o");
-          setDebuggingModel(config.debuggingModel || "gpt-4o");
-          setStreamingEnabled(config.streamingEnabled !== false);
-          setMaxOutputTokens(config.maxOutputTokens || 65536);
-          setContextMessageLimit(config.contextMessageLimit || 30);
-          setContextWindowTokens(config.contextWindowTokens || 128000);
-          const loadedOpacity = Math.min(1, Math.max(0.1, config.opacity ?? 1));
-          setOpacity(loadedOpacity);
-          savedOpacityRef.current = loadedOpacity;
-          setInterviewContextPath(config.interviewContextPath || "");
-          setSpeechApiKey(config.speechApiKey || "");
-          setSpeechWorkspaceId(config.speechWorkspaceId || "");
-          setSpeechRegion(config.speechRegion || "cn-beijing");
-          setSpeechModel(config.speechModel || "qwen-audio-3.0-asr-flash-streaming");
-        })
-        .catch((error: unknown) => {
-          console.error("Failed to load config:", error);
-          showToast("Error", "Failed to load settings", "error");
-        })
-        .finally(() => {
-          setIsLoading(false);
-        });
-    }
-  }, [open, showToast]);
-
-  // 日志路径：用于在设置面板里展示并一键打开日志目录
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    window.electronAPI
-      .getLogInfo()
-      .then((info) => {
-        if (!cancelled) setLogPath(info?.mainLogPath || "");
-      })
-      .catch((error: unknown) => {
-        console.error("Failed to load log info:", error);
-        if (!cancelled) setLogPath("");
-      });
+    setState({ pending: false })
     return () => {
-      cancelled = true;
-    };
-  }, [open]);
-
-  // Handle API provider change
-  const handleProviderChange = (provider: APIProvider) => {
-    setApiProvider(provider);
-
-    // Reset models to defaults when changing provider
-    if (provider === "anthropic") {
-      setExtractionModel("claude-3-7-sonnet-20250219");
-      setSolutionModel("claude-3-7-sonnet-20250219");
-      setDebuggingModel("claude-3-7-sonnet-20250219");
-    } else {
-      setExtractionModel("gpt-4o");
-      setSolutionModel("gpt-4o");
-      setDebuggingModel("gpt-4o");
+      const id = active.current
+      active.current = null
+      if (id) void window.electronAPI.cancelLLMConnectionTest(id).catch(() => {})
     }
-  };
-
-
-  const handleSave = async () => {
-    if (apiProvider === "openai-compatible") {
-      try {
-        const url = new URL(baseURL.trim());
-        if (url.protocol !== "http:" && url.protocol !== "https:") {
-          throw new Error("Unsupported protocol");
-        }
-      } catch {
-        showToast("Error", "Enter a valid HTTP(S) API Base URL", "error");
-        return;
-      }
-    }
-
-    if (solutionBaseURL.trim() || solutionApiKey.trim()) {
-      try {
-        const url = new URL(solutionBaseURL.trim());
-        if (url.protocol !== "http:" && url.protocol !== "https:") {
-          throw new Error("Unsupported protocol");
-        }
-        if (!solutionApiKey.trim() || !solutionModel.trim()) {
-          throw new Error("Incomplete solution endpoint");
-        }
-      } catch {
-        showToast("Error", "Complete the cloud solution URL, API key, and model", "error");
-        return;
-      }
-    }
-
-    setIsLoading(true);
+  }, [open, signature])
+  const cancel = () => {
+    const id = active.current
+    active.current = null
+    setState({ pending: false })
+    if (id) void window.electronAPI.cancelLLMConnectionTest(id).catch(() => {})
+  }
+  const run = async () => {
+    if (active.current) return
+    const id = crypto.randomUUID()
+    active.current = id
+    setState({ pending: true })
     try {
-      const result = await window.electronAPI.updateConfig({
-        apiKey,
-        apiProvider,
-        baseURL: baseURL.trim().replace(/\/$/, ""),
-        extractionModel,
-        solutionApiKey,
-        solutionBaseURL: solutionBaseURL.trim().replace(/\/$/, ""),
-        solutionModel,
-        debuggingModel,
-        streamingEnabled,
-        maxOutputTokens,
-        contextMessageLimit,
-        contextWindowTokens,
-        opacity,
-        interviewContextPath,
-        speechApiKey,
-        speechWorkspaceId: speechWorkspaceId.trim(),
-        speechRegion,
-        speechModel: speechModel.trim(),
-      });
-      
-      if (result) {
-        savedOpacityRef.current = opacity;
-        showToast("Success", "Settings saved successfully", "success");
-        handleOpenChange(false);
-        
-        // Force reload the app to apply the API key
-        setTimeout(() => {
-          window.location.reload();
-        }, 1500);
+      const result = await window.electronAPI.testLLMConnection({ ...route, id })
+      if (active.current !== id) return
+      active.current = null
+      setState({ pending: false, result })
+    } catch {
+      if (active.current !== id) return
+      active.current = null
+      setState({ pending: false, result: { success: false, message: "无法执行测试，请确认已启动新版电脑端", elapsedMs: 0 } })
+    }
+  }
+  return { ...state, run, cancel }
+}
+
+function ConnectionTest({ test, ready, label, disabled = false }: { test: ReturnType<typeof useConnectionTest>; ready: boolean; label: string; disabled?: boolean }) {
+  return <div className="settings-test">
+    <div className="settings-test-actions">
+      <Button type="button" variant="outline" className="settings-test-button" aria-label={label + (test.pending ? "取消测试" : "测试连接")} disabled={disabled || (!test.pending && !ready)} onClick={() => test.pending ? test.cancel() : void test.run()}>
+        {test.pending ? <Loader2 size={14} className="animate-spin" /> : <Activity size={14} />}
+        {test.pending ? "取消测试" : "测试连接"}
+      </Button>
+    </div>
+    {test.pending && <p className="settings-hint">正在请求，最多等待 20 秒…</p>}
+    <div aria-live="polite" aria-atomic="true">
+      {test.result && <div className={"settings-test-result " + (test.result.success ? "is-success" : "is-error")}>
+        {test.result.success ? <CheckCircle2 size={16} /> : <XCircle size={16} />}
+        <span>{test.result.message}{test.result.status ? "（HTTP " + test.result.status + "）" : ""}</span>
+        {test.result.elapsedMs > 0 && <small>{(test.result.elapsedMs / 1000).toFixed(1)} s</small>}
+      </div>}
+    </div>
+  </div>
+}
+
+export function SettingsDialog({ open: externalOpen, onOpenChange }: { open?: boolean; onOpenChange?: (open: boolean) => void }) {
+  const [internalOpen, setInternalOpen] = useState(false)
+  const open = externalOpen ?? internalOpen
+  const [section, setSection] = useState<Section>("models")
+  const [form, setForm] = useState<SettingsDraft>(initialDraft)
+  const [saved, setSaved] = useState<SettingsDraft>(initialDraft)
+  const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [loadFailed, setLoadFailed] = useState(false)
+  const [openingFile, setOpeningFile] = useState(false)
+  const [logPath, setLogPath] = useState("")
+  const [testPurpose, setTestPurpose] = useState<"extractionModel" | "solutionModel" | "debuggingModel">("extractionModel")
+  const savedOpacity = useRef(1)
+  const { showToast } = useToast()
+  const set = <K extends keyof SettingsDraft>(key: K, value: SettingsDraft[K]) => setForm((previous) => ({ ...previous, [key]: value }))
+  const separateSolution = testPurpose === "solutionModel" && Boolean(form.solutionApiKey.trim() || form.solutionBaseURL.trim())
+  const primaryRoute: TestRoute = { route: "primary", apiProvider: separateSolution ? "openai-compatible" : form.apiProvider, apiKey: separateSolution ? form.solutionApiKey : form.apiKey, baseURL: separateSolution ? form.solutionBaseURL : form.baseURL, model: form[testPurpose] }
+  const backupRoute: TestRoute = { route: "fallback", apiProvider: form.fallbackApiProvider, apiKey: form.fallbackApiKey, baseURL: form.fallbackBaseURL, model: form.fallbackModel }
+  const primaryTest = useConnectionTest(open, primaryRoute)
+  const backupTest = useConnectionTest(open, backupRoute)
+  const dirty = JSON.stringify(form) !== JSON.stringify(saved)
+  const currentSection = sections.find((item) => item.id === section)!
+
+  const handleOpenChange = (next: boolean) => {
+    if (saving) return
+    if (!next) {
+      primaryTest.cancel()
+      backupTest.cancel()
+      void window.electronAPI.setOpacity(savedOpacity.current)
+    }
+    setInternalOpen(next)
+    onOpenChange?.(next)
+  }
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    setLoading(true)
+    setLoadFailed(false)
+    window.electronAPI.getConfig().then((config) => {
+      if (cancelled) return
+      const draft = Object.fromEntries(Object.entries(initialDraft).map(([key, value]) => [key, config[key as keyof typeof config] ?? value])) as SettingsDraft
+      draft.opacity = Math.min(1, Math.max(0.1, draft.opacity))
+      setForm(draft)
+      setSaved(draft)
+      savedOpacity.current = draft.opacity
+    }).catch(() => {
+      if (!cancelled) { setLoadFailed(true); showToast("无法读取设置", "请关闭设置后重新打开", "error") }
+    }).finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [open, showToast])
+
+  useEffect(() => {
+    if (!open || section !== "diagnostics") return
+    let cancelled = false
+    window.electronAPI.getLogInfo().then((info) => { if (!cancelled) setLogPath(info.mainLogPath || "") }).catch(() => {})
+    return () => { cancelled = true }
+  }, [open, section])
+
+  const validURL = (value: string) => {
+    const url = new URL(value.trim())
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.hash) throw new Error("请填写有效的 HTTP(S) API 地址")
+  }
+  const handleSave = async () => {
+    try {
+      if (!form.apiKey.trim() || !form.extractionModel.trim() || !form.solutionModel.trim() || !form.debuggingModel.trim()) throw new Error("请补全主线路 Key 和模型")
+      if (form.apiProvider === "openai-compatible") validURL(form.baseURL)
+      if (form.fallbackEnabled) {
+        if (!form.fallbackApiKey.trim() || !form.fallbackModel.trim()) throw new Error("请补全备用线路 Key 和模型，或关闭备用线路")
+        if (form.fallbackApiProvider === "openai-compatible") validURL(form.fallbackBaseURL)
       }
+      if (form.solutionApiKey.trim() || form.solutionBaseURL.trim()) {
+        if (!form.solutionApiKey.trim()) throw new Error("请补全独立追问接口的 Key")
+        validURL(form.solutionBaseURL)
+      }
+      const ranges: Array<[number, number, number, string]> = [
+        [form.llmTimeoutSeconds, 15, 180, "线路超时"], [form.maxOutputTokens, 1024, 65536, "最大输出"],
+        [form.contextMessageLimit, 4, 100, "上下文消息数"], [form.contextWindowTokens, 8192, 1000000, "上下文窗口"],
+      ]
+      for (const [value, min, max, label] of ranges) if (!Number.isInteger(value) || value < min || value > max) throw new Error(label + "请填写 " + min + "～" + max + " 的整数")
     } catch (error) {
-      console.error("Failed to save settings:", error);
-      showToast("Error", "Failed to save settings", "error");
-    } finally {
-      setIsLoading(false);
+      showToast("请检查设置", error instanceof Error ? error.message : "输入有误", "error")
+      return
     }
-  };
+    setSaving(true)
+    try {
+      const next = { ...form }
+      for (const key of Object.keys(next) as Array<keyof SettingsDraft>) {
+        if (typeof next[key] === "string") Object.assign(next, { [key]: String(next[key]).trim() })
+      }
+      next.baseURL = next.baseURL.replace(/\/$/, "")
+      next.fallbackBaseURL = next.fallbackBaseURL.replace(/\/$/, "")
+      next.solutionBaseURL = next.solutionBaseURL.replace(/\/$/, "")
+      const result = await window.electronAPI.updateConfig(next)
+      if (!result) throw new Error()
+      savedOpacity.current = next.opacity
+      setSaved(next)
+      setForm(next)
+      showToast("设置已保存", "新的模型配置会用于后续请求", "success")
+      primaryTest.cancel()
+      backupTest.cancel()
+      setInternalOpen(false)
+      onOpenChange?.(false)
+    } catch { showToast("保存失败", "请稍后再试", "error") } finally { setSaving(false) }
+  }
+  const openContextFile = async () => {
+    setOpeningFile(true)
+    try {
+      const result = await window.electronAPI.openInterviewContextFile(form.interviewContextPath.trim())
+      if (!result.success) throw new Error(result.error || "请检查文件路径")
+      if (result.path) set("interviewContextPath", result.path)
+    } catch (error) { showToast("无法打开文件", error instanceof Error ? error.message : "请稍后重试", "error") } finally { setOpeningFile(false) }
+  }
+  const ready = (route: TestRoute) => Boolean(route.apiKey.trim() && route.model.trim() && (route.apiProvider === "anthropic" || route.baseURL.trim()))
+  const modelControl = (key: "extractionModel" | "solutionModel" | "debuggingModel", label: string) => <Field label={label}>
+    {form.apiProvider === "anthropic" && !(key === "solutionModel" && form.solutionBaseURL.trim())
+      ? <select className="settings-control" aria-label={label} value={form[key]} onChange={(event) => set(key, event.target.value)}>{claudeModels.map((model) => <option key={model} value={model}>{model}</option>)}</select>
+      : <Input aria-label={label} className="settings-control settings-mono" value={form[key]} onChange={(event) => set(key, event.target.value)} placeholder="完整模型 ID" />}
+  </Field>
 
-  // Mask API key for display
-  const maskApiKey = (key: string) => {
-    if (!key || key.length < 10) return "";
-    return `${key.substring(0, 4)}...${key.substring(key.length - 4)}`;
-  };
-
-  // Open external link handler
-  const openExternalLink = (url: string) => {
-    window.electronAPI.openLink(url);
-  };
-
-  const openInterviewContextFile = async () => {
-    const targetPath = interviewContextPath.trim();
-    if (targetPath) {
-      await window.electronAPI.updateConfig({ interviewContextPath: targetPath });
-    }
-    const result = await window.electronAPI.openInterviewContextFile();
-    if (!result.success) {
-      showToast("无法打开上下文文件", result.error || "请检查文件路径", "error");
-      return;
-    }
-    if (result.path) setInterviewContextPath(result.path);
-  };
-
-  const opacityProgress = `${((opacity - 0.1) / 0.9) * 100}%`;
-
-  const openLogFolder = async () => {
-    const result = await openLogDirectory();
-    if (!result.success) {
-      showToast("无法打开日志目录", result.error || "请稍后重试", "error");
-    }
-  };
-
-  return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent 
-        className="sm:max-w-md bg-white/[0.90] border border-black/10 text-black settings-dialog"
-        style={{
-          position: 'fixed',
-          top: '50%',
-          left: '50%',
-          transform: 'translate(-50%, -50%)',
-          width: 'min(450px, 90vw)',
-          height: 'auto',
-          minHeight: '400px',
-          maxHeight: '90vh',
-          overflowY: 'auto',
-          zIndex: 9999,
-          margin: 0,
-          padding: '20px',
-          transition: 'opacity 0.25s ease, transform 0.25s ease',
-          animation: 'fadeIn 0.25s ease forwards',
-          opacity: 0.98
-        }}
-      >        
-        <DialogHeader>
-          <DialogTitle>API Settings</DialogTitle>
-          <DialogDescription className="text-black/65">
-            Configure your API key and model preferences. You'll need your own API key to use this application.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-2 rounded-lg border border-black/10 bg-white/[0.52] p-3">
-          <div className="flex items-center justify-between gap-3">
-            <label className="text-sm font-medium text-black" htmlFor="ui-opacity">界面透明度</label>
-            <span className="rounded-md bg-black/[0.06] px-2 py-1 text-xs font-medium tabular-nums text-black/75">
-              {Math.round(opacity * 100)}%
-            </span>
-          </div>
-          <input
-            id="ui-opacity"
-            type="range"
-            min="0.1"
-            max="1"
-            step="0.01"
-            value={opacity}
-            onChange={(event) => {
-              const nextOpacity = Math.min(1, Math.max(0.1, Number(event.target.value)));
-              setOpacity(nextOpacity);
-              void window.electronAPI.setOpacity(nextOpacity);
-            }}
-            className="opacity-slider"
-            style={{ "--opacity-progress": opacityProgress } as CSSProperties}
-          />
-          <p className="text-xs text-black/50">拖动时实时预览，点击保存后永久生效。</p>
-        </div>
-        <div className="space-y-4 py-4">
-          <div className="space-y-2 rounded-lg border border-black/10 bg-white/[0.52] p-3">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <label className="text-sm font-medium text-black" htmlFor="interviewContextPath">面试上下文文件</label>
-                <p className="mt-1 text-xs text-black/60">
-                  填入简历、项目经历和岗位资料。留空时使用默认路径，文件不存在会自动创建。
-                </p>
-              </div>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="shrink-0 border-black/15 text-black hover:bg-black/[0.05]"
-                onClick={() => void openInterviewContextFile()}
-              >
-                打开文件
-              </Button>
-            </div>
-            <Input
-              id="interviewContextPath"
-              value={interviewContextPath}
-              onChange={(event) => setInterviewContextPath(event.target.value)}
-              placeholder="留空使用默认路径"
-              className="bg-white/[0.68] border-black/10 text-black font-mono"
-            />
-            <p className="text-[11px] text-black/50">
-              默认：~/Library/Application Support/steamgamecode/interview-context.md
-            </p>
-          </div>
-
-          <div className="space-y-2 rounded-lg border border-black/10 bg-white/[0.52] p-3">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <label className="text-sm font-medium text-black">运行日志</label>
-                <p className="mt-1 text-xs text-black/60">
-                  主进程和前端日志按启动批次写入同一个文件，遇到问题可以打开日志目录排查。
-                </p>
-              </div>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="shrink-0 border-black/15 text-black hover:bg-black/[0.05]"
-                onClick={() => void openLogFolder()}
-              >
-                打开日志目录
-              </Button>
-            </div>
-            {logPath ? (
-              <p className="break-all font-mono text-[11px] text-black/50">{logPath}</p>
-            ) : null}
-          </div>
-
-          {/* API Provider Selection */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-black">API Provider</label>
-            <div className="grid grid-cols-2 gap-2">
-              <div
-                className={`flex-1 p-2 rounded-lg cursor-pointer transition-colors ${
-                  apiProvider === "openai-compatible"
-                    ? "bg-black/[0.06] border border-black/20"
-                    : "bg-white/[0.48] border border-black/5 hover:bg-black/[0.04]"
-                }`}
-                onClick={() => handleProviderChange("openai-compatible")}
-              >
-                <div className="flex items-center gap-2">
-                  <div
-                    className={`w-3 h-3 rounded-full ${
-                      apiProvider === "openai-compatible" ? "bg-black" : "bg-black/20"
-                    }`}
-                  />
-                  <div className="flex flex-col">
-                    <p className="font-medium text-black text-sm">OpenAI Compatible</p>
-                    <p className="text-xs text-black/60">Custom endpoint</p>
-                  </div>
+  return <Dialog open={open} onOpenChange={handleOpenChange}>
+    <DialogContent className="settings-dialog settings-shell" style={{ width: "min(920px, 94vw)", maxWidth: "920px", height: "min(760px, 90vh)", maxHeight: "90vh", overflow: "hidden", padding: 0 }}>
+      <header className="settings-header">
+        <div className="settings-heading-icon"><Settings2 size={20} /></div>
+        <div><DialogTitle className="settings-title">设置</DialogTitle><DialogDescription className="settings-description">连接你的模型服务，调整适合自己的工作方式。</DialogDescription></div>
+        <button type="button" className="settings-close" aria-label="关闭设置" disabled={saving} onClick={() => handleOpenChange(false)}><X size={18} /></button>
+      </header>
+      <div className="settings-body">
+        <nav className="settings-nav" aria-label="设置分类">
+          {sections.map(({ id, label, icon: Icon }) => <button type="button" key={id} aria-current={section === id ? "page" : undefined} className={section === id ? "is-active" : ""} onClick={() => setSection(id)}><Icon size={16} /><span>{label}</span>{section === id && <span className="settings-nav-dot" />}</button>)}
+          <div className="settings-nav-note"><ShieldCheck size={15} /><span>配置保存在本机</span></div>
+        </nav>
+        <main className="settings-main" key={section}>
+          <div className="settings-section-title"><h2>{currentSection.label}</h2><p>{currentSection.caption}</p></div>
+          {loading ? <div className="settings-loading"><Loader2 size={20} className="animate-spin" />正在读取设置…</div> : loadFailed ? <div className="settings-callout">设置读取失败。请关闭后重新打开，避免覆盖已有配置。</div> : <fieldset disabled={saving} className="settings-fields">
+            {section === "models" && <>
+              <Card compact title="主线路" description="每次请求优先使用的模型服务" accessory={<ConnectionTest label="主线路" test={primaryTest} ready={ready(primaryRoute)} disabled={saving} />}>
+                <div className="settings-grid">
+                  <Field label="接口协议"><ProviderSelect value={form.apiProvider} onChange={(provider) => {
+                    const model = provider === "anthropic" ? claudeModels[0] : "gpt-4o"
+                    setForm((previous) => ({ ...previous, apiProvider: provider, extractionModel: model, solutionModel: previous.solutionBaseURL ? previous.solutionModel : model, debuggingModel: model }))
+                  }} /></Field>
+                  <Field label="API Base URL" hint={form.apiProvider === "anthropic" ? "使用 Anthropic 官方地址" : "按服务商要求包含 /v1 等路径"}>
+                    <Input aria-label="主线路 API 地址" className="settings-control settings-mono" disabled={form.apiProvider === "anthropic"} value={form.apiProvider === "anthropic" ? "https://api.anthropic.com" : form.baseURL} onChange={(event) => set("baseURL", event.target.value)} placeholder="https://api.example.com/v1" />
+                  </Field>
+                  <Field label="API Key"><Input aria-label="主线路 API Key" autoComplete="off" type="password" className="settings-control" value={form.apiKey} onChange={(event) => set("apiKey", event.target.value)} placeholder="输入主线路密钥" /></Field>
+                  {modelControl("extractionModel", "视觉 / 对话模型")}
                 </div>
-              </div>
-              <div
-                className={`flex-1 p-2 rounded-lg cursor-pointer transition-colors ${
-                  apiProvider === "anthropic"
-                    ? "bg-black/[0.06] border border-black/20"
-                    : "bg-white/[0.48] border border-black/5 hover:bg-black/[0.04]"
-                }`}
-                onClick={() => handleProviderChange("anthropic")}
-              >
-                <div className="flex items-center gap-2">
-                  <div
-                    className={`w-3 h-3 rounded-full ${
-                      apiProvider === "anthropic" ? "bg-black" : "bg-black/20"
-                    }`}
-                  />
-                  <div className="flex flex-col">
-                    <p className="font-medium text-black text-sm">Claude</p>
-                    <p className="text-xs text-black/60">Claude 3 models</p>
-                  </div>
+                <details className="settings-details"><summary>更多模型与独立追问接口<ChevronDown size={14} /></summary><div className="settings-details-content">
+                  <div className="settings-grid">{modelControl("solutionModel", "追问模型")}{modelControl("debuggingModel", "调试模型")}</div>
+                  <p className="settings-hint">可为旧版解题流程的文字追问单独配置兼容接口；当前多轮聊天仍使用上方视觉 / 对话模型。留空沿用主线路。</p>
+                  <div className="settings-grid"><Field label="独立追问 Base URL"><Input aria-label="独立追问 API 地址" className="settings-control settings-mono" value={form.solutionBaseURL} onChange={(event) => set("solutionBaseURL", event.target.value)} placeholder="可选" /></Field><Field label="独立追问 API Key"><Input aria-label="独立追问 API Key" type="password" autoComplete="off" className="settings-control" value={form.solutionApiKey} onChange={(event) => set("solutionApiKey", event.target.value)} placeholder="可选" /></Field></div>
+                </div></details>
+                <div className="settings-test-target"><span>测试模型</span><select className="settings-control" aria-label="主线路测试用途" value={testPurpose} onChange={(event) => setTestPurpose(event.target.value as typeof testPurpose)}><option value="extractionModel">视觉 / 对话模型</option><option value="solutionModel">追问模型{form.solutionBaseURL.trim() ? " · 独立接口" : ""}</option><option value="debuggingModel">调试模型</option></select></div>
+              </Card>
+              <Card compact title="备用线路" description="主线路不可用时，自动尝试备用服务一次" accessory={<ConnectionTest label="备用线路" test={backupTest} ready={ready(backupRoute)} disabled={saving} />}>
+                <Toggle checked={form.fallbackEnabled} onChange={(value) => set("fallbackEnabled", value)} label="启用自动切换" description="关闭时无需填写，仍可提前配置并测试备用服务。" />
+                <div className="settings-grid">
+                  <Field label="接口协议"><ProviderSelect value={form.fallbackApiProvider} onChange={(value) => set("fallbackApiProvider", value)} /></Field>
+                  <Field label="API Base URL"><Input aria-label="备用线路 API 地址" className="settings-control settings-mono" disabled={form.fallbackApiProvider === "anthropic"} value={form.fallbackApiProvider === "anthropic" ? "https://api.anthropic.com" : form.fallbackBaseURL} onChange={(event) => set("fallbackBaseURL", event.target.value)} placeholder="https://api.example.com/v1" /></Field>
+                  <Field label="API Key"><Input aria-label="备用线路 API Key" type="password" autoComplete="off" className="settings-control" value={form.fallbackApiKey} onChange={(event) => set("fallbackApiKey", event.target.value)} placeholder="输入备用线路密钥" /></Field>
+                  <Field label="备用模型"><Input aria-label="备用模型" className="settings-control settings-mono" value={form.fallbackModel} onChange={(event) => set("fallbackModel", event.target.value)} placeholder="支持图片输入的模型 ID" /></Field>
                 </div>
-              </div>
-            </div>
-          </div>
-
-          {apiProvider === "openai-compatible" && (
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-black" htmlFor="baseURL">
-                API Base URL
-              </label>
-              <Input
-                id="baseURL"
-                type="url"
-                value={baseURL}
-                onChange={(e) => setBaseURL(e.target.value)}
-                placeholder="https://api.example.com/v1"
-                className="bg-white/[0.68] border-black/10 text-black"
-              />
-              <p className="text-xs text-black/50">
-                Include the API version path when required, for example /v1.
-              </p>
-              <div className="flex items-center justify-between rounded-lg border border-black/10 bg-white/[0.52] p-3">
-                <div className="pr-3">
-                  <p className="text-sm font-medium text-black">流式输出（Streaming）</p>
-                  <p className="text-xs text-black/60">
-                    目前仅 DeepSeek 官方接口（api.deepseek.com）支持流式输出
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={streamingEnabled}
-                  onClick={() => setStreamingEnabled(!streamingEnabled)}
-                  className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
-                    streamingEnabled ? "bg-blue-500" : "bg-black/15"
-                  }`}
-                >
-                  <span
-                    className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
-                      streamingEnabled ? "translate-x-5" : ""
-                    }`}
-                  />
-                </button>
-              </div>
-            </div>
-          )}
-
-          <div className="space-y-3 rounded-lg border border-black/10 bg-white/[0.52] p-3">
-            <div>
-              <label className="text-sm font-medium text-black" htmlFor="context-message-limit">
-                上下文消息数
-              </label>
-              <p className="mt-1 text-xs text-black/55">
-                每次追问会携带最近 N 条对话消息；数值越大，上下文越完整，但请求也越大。
-              </p>
-              <Input
-                id="context-message-limit"
-                type="number"
-                min={4}
-                max={100}
-                value={contextMessageLimit}
-                onChange={(event) => setContextMessageLimit(Number(event.target.value))}
-                className="mt-2 bg-white/[0.68] border-black/10 text-black"
-              />
-            </div>
-            <div>
-              <label className="text-sm font-medium text-black" htmlFor="context-window-tokens">
-                模型上下文窗口 Tokens
-              </label>
-              <p className="mt-1 text-xs text-black/55">
-                当前模型可接收的最大上下文长度，用于判断何时压缩历史对话。
-              </p>
-              <Input
-                id="context-window-tokens"
-                type="number"
-                min={8192}
-                max={1000000}
-                step={1024}
-                value={contextWindowTokens}
-                onChange={(event) => setContextWindowTokens(Number(event.target.value))}
-                className="mt-2 bg-white/[0.68] border-black/10 text-black"
-              />
-            </div>
-            <div>
-              <label className="text-sm font-medium text-black" htmlFor="max-output-tokens">
-                单次最大输出 Tokens
-              </label>
-              <p className="mt-1 text-xs text-black/55">
-                截图解题、文字追问和调试模式共用的最大输出长度。范围 1024～65536。
-              </p>
-              <Input
-                id="max-output-tokens"
-                type="number"
-                min={1024}
-                max={65536}
-                step={1024}
-                value={maxOutputTokens}
-                onChange={(event) => setMaxOutputTokens(Number(event.target.value))}
-                className="mt-2 bg-white/[0.68] border-black/10 text-black"
-              />
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-black" htmlFor="apiKey">
-            {apiProvider === "openai-compatible" ? "Compatible API Key" : "Anthropic API Key"}
-            </label>
-            <Input
-              id="apiKey"
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder={
-                apiProvider === "openai-compatible" ? "Enter the key required by your endpoint" : "sk-ant-..."
-              }
-              className="bg-white/[0.68] border-black/10 text-black"
-            />
-            {apiKey && (
-              <p className="text-xs text-black/50">
-                Current: {maskApiKey(apiKey)}
-              </p>
-            )}
-            <p className="text-xs text-black/50">
-              Your API key is stored locally and sent only to {
-                apiProvider === "openai-compatible" ? "your configured endpoint" : "Anthropic"
-              }.
-            </p>
-            <div className="mt-2 p-2 rounded-md bg-white/[0.52] border border-black/10">
-              <p className="text-xs text-black/75 mb-1">Don't have an API key?</p>
-              {apiProvider === "openai-compatible" ? (
-                <p className="text-xs text-black/60">
-                  Use the API key issued by your OpenAI-compatible service. The endpoint must support Chat Completions and image inputs for screenshot extraction.
-                </p>
-              ) : (
-                <>
-                  <p className="text-xs text-black/60 mb-1">1. Create an account at <button 
-                    onClick={() => openExternalLink('https://console.anthropic.com/signup')} 
-                    className="text-blue-600 hover:underline cursor-pointer">Anthropic</button>
-                  </p>
-                  <p className="text-xs text-black/60 mb-1">2. Go to the <button 
-                    onClick={() => openExternalLink('https://console.anthropic.com/settings/keys')} 
-                    className="text-blue-600 hover:underline cursor-pointer">API Keys</button> section
-                  </p>
-                  <p className="text-xs text-black/60">3. Create a new API key and paste it here</p>
-                </>
-              )}
-            </div>
-          </div>
-          
-          <div className="space-y-2 mt-4">
-            <label className="text-sm font-medium text-black mb-2 block">Keyboard Shortcuts</label>
-            <div className="bg-white/[0.48] border border-black/10 rounded-lg p-3">
-              <div className="grid grid-cols-2 gap-y-2 text-xs">
-                <div className="text-black/65">Toggle Visibility</div>
-                <div className="text-black/80 font-mono">{COMMAND_KEY}+B</div>
-                
-                <div className="text-black/65">Mouse Shake</div>
-                <div className="text-black/80">快速左右晃动 4 次</div>
-                
-                <div className="text-black/65">New Session</div>
-                <div className="text-black/80 font-mono">{COMMAND_KEY}+N</div>
-                
-                <div className="text-black/65">Take Screenshot</div>
-                <div className="text-black/80 font-mono">{COMMAND_KEY}+H</div>
-                
-                <div className="text-black/65">Process Screenshots</div>
-                <div className="text-black/80 font-mono">{COMMAND_KEY}+Enter</div>
-
-                <div className="text-black/65">Delete Last Screenshot</div>
-                <div className="text-black/80 font-mono">{COMMAND_KEY}+L</div>
-                
-                <div className="text-black/65">Reset View</div>
-                <div className="text-black/80 font-mono">{COMMAND_KEY}+R</div>
-                
-                <div className="text-black/65">Quit Application</div>
-                <div className="text-black/80 font-mono">{COMMAND_KEY}+Q</div>
-                
-                <div className="text-black/65">Move Window</div>
-                <div className="text-black/80 font-mono">{COMMAND_KEY}+Arrow Keys</div>
-                
-                <div className="text-black/65">Decrease Opacity</div>
-                <div className="text-black/80 font-mono">{COMMAND_KEY}+[</div>
-                
-                <div className="text-black/65">Increase Opacity</div>
-                <div className="text-black/80 font-mono">{COMMAND_KEY}+]</div>
-                
-                <div className="text-black/65">Zoom Out</div>
-                <div className="text-black/80 font-mono">{COMMAND_KEY}+-</div>
-                
-                <div className="text-black/65">Reset Zoom</div>
-                <div className="text-black/80 font-mono">{COMMAND_KEY}+0</div>
-                
-                <div className="text-black/65">Zoom In</div>
-                <div className="text-black/80 font-mono">{COMMAND_KEY}+=</div>
-              </div>
-            </div>
-          </div>
-          
-          <div className="space-y-4 mt-4">
-            <div className="space-y-3 rounded-lg border border-black/10 bg-white/[0.52] p-3">
-              <div>
-                <label className="text-sm font-medium text-black">Qwen Realtime Speech Recognition</label>
-                <p className="text-xs text-black/60">
-                  Optional Alibaba Cloud realtime transcription. Start and stop recording from the chat window.
-                </p>
-              </div>
-              <div className="space-y-1">
-                <label className="text-xs text-black/65" htmlFor="speechApiKey">DashScope API Key</label>
-                <Input
-                  id="speechApiKey"
-                  type="password"
-                  value={speechApiKey}
-                  onChange={(e) => setSpeechApiKey(e.target.value)}
-                  placeholder="sk-..."
-                  className="bg-white/[0.68] border-black/10 text-black"
-                />
-                {speechApiKey && <p className="text-xs text-black/50">Current: {maskApiKey(speechApiKey)}</p>}
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="space-y-1">
-                  <label className="text-xs text-black/65" htmlFor="speechWorkspaceId">Workspace ID（可选）</label>
-                  <Input
-                    id="speechWorkspaceId"
-                    value={speechWorkspaceId}
-                    onChange={(e) => setSpeechWorkspaceId(e.target.value)}
-                    placeholder="留空使用公共服务入口"
-                    className="bg-white/[0.68] border-black/10 text-black font-mono"
-                  />
-                  <p className="text-[11px] text-black/[0.45]">仅填写百炼控制台中的真实业务空间 ID</p>
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs text-black/65" htmlFor="speechRegion">Region</label>
-                  <select
-                    id="speechRegion"
-                    value={speechRegion}
-                    onChange={(e) => setSpeechRegion(e.target.value)}
-                    className="h-10 w-full rounded-md border border-black/10 bg-white/[0.68] px-3 text-sm text-black"
-                  >
-                    <option value="cn-beijing">北京 cn-beijing</option>
-                    <option value="ap-southeast-1">新加坡 ap-southeast-1</option>
-                  </select>
-                </div>
-              </div>
-              <div className="space-y-1">
-                <label className="text-xs text-black/65" htmlFor="speechModel">Speech Model</label>
-                <Input
-                  id="speechModel"
-                  value={speechModel}
-                  onChange={(e) => setSpeechModel(e.target.value)}
-                  placeholder="qwen-audio-3.0-asr-flash-streaming"
-                  className="bg-white/[0.68] border-black/10 text-black font-mono"
-                />
-              </div>
-            </div>
-
-            <div className="space-y-3 rounded-lg border border-black/10 bg-white/[0.52] p-3">
-              <div>
-                <label className="text-sm font-medium text-black">Cloud Solution Endpoint</label>
-                <p className="text-xs text-black/60">
-                  Optional separate OpenAI-compatible endpoint used only for solution generation.
-                </p>
-              </div>
-              <div className="space-y-1">
-                <label className="text-xs text-black/65" htmlFor="solutionBaseURL">
-                  Solution Base URL
-                </label>
-                <Input
-                  id="solutionBaseURL"
-                  type="url"
-                  value={solutionBaseURL}
-                  onChange={(e) => setSolutionBaseURL(e.target.value)}
-                  placeholder="https://api.deepseek.com"
-                  className="bg-white/[0.68] border-black/10 text-black font-mono"
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-xs text-black/65" htmlFor="solutionApiKey">
-                  Solution API Key
-                </label>
-                <Input
-                  id="solutionApiKey"
-                  type="password"
-                  value={solutionApiKey}
-                  onChange={(e) => setSolutionApiKey(e.target.value)}
-                  placeholder="sk-..."
-                  className="bg-white/[0.68] border-black/10 text-black"
-                />
-                {solutionApiKey && (
-                  <p className="text-xs text-black/50">
-                    Current: {maskApiKey(solutionApiKey)}
-                  </p>
-                )}
-              </div>
-            </div>
-
-            <label className="text-sm font-medium text-black">AI Model Selection</label>
-            <p className="text-xs text-black/60 -mt-3 mb-2">
-              截图由视觉模型直接解题；文字追问和调试使用对应的独立模型。
-            </p>
-            
-            {apiProvider === "openai-compatible" ? (
-              <div className="space-y-4">
-                {[
-                  {
-                    id: "customExtractionModel",
-                    label: "Visual Solving (Screenshots)",
-                    description: "Must support image inputs and direct problem solving",
-                    value: extractionModel,
-                    setter: setExtractionModel,
-                  },
-                  {
-                    id: "customSolutionModel",
-                    label: "Follow-up Chat",
-                    description: "Model used for text follow-up and code discussion",
-                    value: solutionModel,
-                    setter: setSolutionModel,
-                  },
-                  {
-                    id: "customDebuggingModel",
-                    label: "Debugging",
-                    description: "Model used to debug and improve solutions",
-                    value: debuggingModel,
-                    setter: setDebuggingModel,
-                  },
-                ].map((field) => (
-                  <div key={field.id} className="space-y-1">
-                    <label className="text-sm font-medium text-black" htmlFor={field.id}>
-                      {field.label}
-                    </label>
-                    <p className="text-xs text-black/60">{field.description}</p>
-                    <Input
-                      id={field.id}
-                      value={field.value}
-                      onChange={(e) => field.setter(e.target.value)}
-                      placeholder="Enter the exact model ID"
-                      className="bg-white/[0.68] border-black/10 text-black font-mono"
-                    />
-                  </div>
-                ))}
-              </div>
-            ) : modelCategories
-              .map((category) => {
-              // Get the appropriate model list based on selected provider
-              const models = category.anthropicModels;
-              
-              return (
-                <div key={category.key} className="mb-4">
-                  <label className="text-sm font-medium text-black mb-1 block">
-                    {category.title}
-                  </label>
-                  <p className="text-xs text-black/60 mb-2">{category.description}</p>
-                  
-                  <div className="space-y-2">
-                    {models.map((m) => {
-                      // Determine which state to use based on category key
-                      const currentValue = 
-                        category.key === 'extractionModel' ? extractionModel :
-                        category.key === 'solutionModel' ? solutionModel :
-                        debuggingModel;
-                      
-                      // Determine which setter function to use
-                      const setValue = 
-                        category.key === 'extractionModel' ? setExtractionModel :
-                        category.key === 'solutionModel' ? setSolutionModel :
-                        setDebuggingModel;
-                        
-                      return (
-                        <div
-                          key={m.id}
-                          className={`p-2 rounded-lg cursor-pointer transition-colors ${
-                            currentValue === m.id
-                              ? "bg-black/[0.06] border border-black/20"
-                              : "bg-white/[0.48] border border-black/5 hover:bg-black/[0.04]"
-                          }`}
-                          onClick={() => setValue(m.id)}
-                        >
-                          <div className="flex items-center gap-2">
-                            <div
-                              className={`w-3 h-3 rounded-full ${
-                                currentValue === m.id ? "bg-black" : "bg-black/20"
-                              }`}
-                            />
-                            <div>
-                              <p className="font-medium text-black text-xs">{m.name}</p>
-                              <p className="text-xs text-black/60">{m.description}</p>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-        <DialogFooter className="flex justify-between sm:justify-between">
-          <Button
-            variant="outline"
-            onClick={() => handleOpenChange(false)}
-            className="border-black/10 hover:bg-black/[0.04] text-black"
-          >
-            Cancel
-          </Button>
-          <Button
-            className="px-4 py-3 bg-black text-white rounded-xl font-medium hover:bg-black/80 transition-colors"
-            onClick={handleSave}
-            disabled={
-              isLoading || !apiKey ||
-              Boolean(solutionBaseURL.trim()) !== Boolean(solutionApiKey.trim()) ||
-              (apiProvider === "openai-compatible" && (
-                !baseURL.trim() || !extractionModel.trim() ||
-                (!solutionModel.trim() || !debuggingModel.trim())
-              ))
-            }
-          >
-            {isLoading ? "Saving..." : "Save Settings"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
+              </Card>
+              <div className="settings-callout"><CircleHelp size={16} /><p>填齐地址、Key 和模型后可测试，无需保存。仅测试文字响应，不验证图片输入，可能产生少量 API 费用。启用自动切换后，正常请求的上下文与图片可能发送给备用服务。</p></div>
+            </>}
+            {section === "requests" && <>
+              <Card title="响应方式" description="主线路与备用线路共用的请求策略">
+                <Toggle checked={form.streamingEnabled} onChange={(value) => set("streamingEnabled", value)} label="流式输出" description="边生成边显示；需当前接口支持。Anthropic 当前按完整回复显示。" />
+                <div className="settings-grid"><Field label="每条线路超时（秒）" hint="15～180 秒，超时后按备用策略处理"><Input aria-label="每条线路超时" className="settings-control" type="number" min={15} max={180} value={form.llmTimeoutSeconds} onChange={(event) => set("llmTimeoutSeconds", Number(event.target.value))} /></Field><Field label="最大输出 Tokens" hint="1024～65536，需在服务商允许范围内"><Input aria-label="最大输出 Tokens" className="settings-control" type="number" min={1024} max={65536} value={form.maxOutputTokens} onChange={(event) => set("maxOutputTokens", Number(event.target.value))} /></Field></div>
+              </Card>
+              <Card title="上下文管理" description="历史越长，请求消耗与等待时间通常越高"><div className="settings-grid"><Field label="携带的消息数" hint="最近 4～100 条消息"><Input aria-label="上下文消息数" className="settings-control" type="number" min={4} max={100} value={form.contextMessageLimit} onChange={(event) => set("contextMessageLimit", Number(event.target.value))} /></Field><Field label="模型上下文窗口 Tokens" hint="8192～1000000，用于判断历史压缩时机"><Input aria-label="模型上下文窗口" className="settings-control" type="number" min={8192} max={1000000} value={form.contextWindowTokens} onChange={(event) => set("contextWindowTokens", Number(event.target.value))} /></Field></div></Card>
+            </>}
+            {section === "speech" && <>
+              <Card title="实时语音识别" description="可选的 DashScope 服务，在聊天窗口中开始或停止录音"><div className="settings-grid">
+                <Field label="DashScope API Key" className="settings-span-full"><Input aria-label="语音识别 API Key" type="password" autoComplete="off" className="settings-control" value={form.speechApiKey} onChange={(event) => set("speechApiKey", event.target.value)} placeholder="输入语音服务密钥" /></Field>
+                <Field label="地域"><select className="settings-control" aria-label="语音识别地域" value={form.speechRegion} onChange={(event) => set("speechRegion", event.target.value)}><option value="cn-beijing">北京 · cn-beijing</option><option value="ap-southeast-1">新加坡 · ap-southeast-1</option></select></Field>
+                <Field label="Workspace ID" hint="可选，留空使用公共入口"><Input aria-label="语音识别 Workspace ID" className="settings-control settings-mono" value={form.speechWorkspaceId} onChange={(event) => set("speechWorkspaceId", event.target.value)} placeholder="业务空间 ID" /></Field>
+                <Field label="识别模型" className="settings-span-full"><Input aria-label="语音识别模型" className="settings-control settings-mono" value={form.speechModel} onChange={(event) => set("speechModel", event.target.value)} /></Field>
+              </div></Card>
+              <Card title="面试上下文" description="保存简历、项目经历与岗位资料；在聊天窗口中启用上下文"><Field label="上下文文件路径" hint="留空使用应用默认路径，文件不存在时会创建。"><Input aria-label="面试上下文文件路径" className="settings-control settings-mono" value={form.interviewContextPath} onChange={(event) => set("interviewContextPath", event.target.value)} placeholder="留空使用默认路径" /></Field><div className="settings-card-bottom"><span className="settings-hint">打开文件不会保存其他设置。</span><Button type="button" variant="outline" className="settings-test-button" disabled={openingFile} onClick={() => void openContextFile()}><FileText size={14} />{openingFile ? "正在打开…" : "打开文件"}</Button></div></Card>
+            </>}
+            {section === "appearance" && <>
+              <Card title="窗口透明度" description="拖动实时预览，保存后生效；取消会恢复之前的设置" accessory={<span className="settings-opacity-value">{Math.round(form.opacity * 100)}%</span>}>
+                <input type="range" aria-label="窗口透明度" min={0.1} max={1} step={0.01} value={form.opacity} className="opacity-slider" style={{ "--opacity-progress": ((form.opacity - 0.1) / 0.9 * 100) + "%" } as CSSProperties} onChange={(event) => { const value = Number(event.target.value); set("opacity", value); void window.electronAPI.setOpacity(value) }} /><div className="settings-range-labels"><span>更透明</span><span>更清晰</span></div>
+              </Card>
+              <Card title="快捷键" description="常用操作保持触手可及" accessory={<Keyboard size={17} className="text-slate-400" />}><div className="settings-shortcuts">{[
+                ["显示 / 隐藏窗口", "B"], ["新建会话", "N"], ["采集图片", "H"], ["发送 / 处理", "Enter"], ["删除最近图片", "L"], ["重置视图", "R"], ["移动窗口", "方向键"], ["降低 / 提高透明度", "[ / ]"], ["缩小 / 放大", "− / +"], ["恢复缩放", "0"], ["退出应用", "Q"],
+              ].map(([label, key]) => <div key={key}><span>{label}</span><kbd>{COMMAND_KEY} + {key}</kbd></div>)}<div><span>鼠标唤起窗口</span><small>快速左右晃动 4 次</small></div></div></Card>
+            </>}
+            {section === "storage" && <StoragePanel />}
+            {section === "diagnostics" && <>
+              <Card title="运行日志" description="按启动批次记录运行状态，便于定位模型与连接问题"><Field label="日志位置"><div className="settings-path">{logPath || "暂未获取到日志路径"}</div></Field><div className="settings-card-bottom"><span className="settings-hint">日志可能含请求信息，分享前请自行检查。</span><Button type="button" variant="outline" className="settings-test-button" onClick={() => void openLogDirectory().then((result) => { if (!result.success) showToast("无法打开日志目录", result.error || "请稍后重试", "error") }).catch(() => showToast("无法打开日志目录", "请稍后重试", "error"))}>打开日志目录<ArrowRight size={14} /></Button></div></Card>
+              <Card title="线路诊断" description="主、备用线路可分别检查，不改变正在使用的配置"><p className="settings-hint">测试返回连接耗时，以及认证、余额、限流和服务端错误等结果。修改地址、Key 或模型后，旧结果会清除。</p><Button type="button" variant="outline" className="settings-test-button mt-4" onClick={() => setSection("models")}>前往模型线路<ArrowRight size={14} /></Button></Card>
+            </>}
+          </fieldset>}
+        </main>
+      </div>
+      <footer className="settings-footer"><div className="settings-save-note">{saving ? <Loader2 size={14} className="animate-spin" /> : dirty ? <span className="settings-unsaved-dot" /> : <Check size={14} />}<span>{saving ? "正在保存" : dirty ? "有未保存的更改" : "设置已同步"}</span></div><div className="settings-footer-actions"><Button type="button" variant="ghost" className="settings-cancel" disabled={saving} onClick={() => handleOpenChange(false)}>取消</Button><Button type="button" className="settings-save" disabled={loading || loadFailed || saving || !dirty} onClick={() => void handleSave()}>{saving && <Loader2 size={14} className="animate-spin" />}保存更改</Button></div></footer>
+    </DialogContent>
+  </Dialog>
 }

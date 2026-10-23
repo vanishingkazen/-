@@ -1,5 +1,6 @@
 console.log("Preload script starting...")
 import { contextBridge, ipcRenderer, shell, type IpcRendererEvent } from "electron"
+import type { LLMConnectionTestRequest } from "./LLMConnectionTest"
 
 type ScreenshotTakenPayload = { path: string; preview: string }
 type LanguageDetectedPayload = { language: string }
@@ -10,7 +11,7 @@ type ChatStartedPayload = {
   acceptedImagePaths?: string[]
 }
 type ChatStreamPayload = { requestId: string; sessionId: string; content: string; done: boolean }
-type ChatThinkingPayload = { requestId: string; sessionId: string; reasoningChars: number }
+type ChatThinkingPayload = { requestId: string; sessionId: string; reasoningChars: number; message?: string }
 type ChatContextCompressedPayload = { sessionId: string; summary: string }
 type ChatSuccessPayload = { requestId: string; sessionId: string; content: string; session: unknown }
 type ChatErrorPayload = { requestId: string; sessionId: string; error: string }
@@ -29,7 +30,7 @@ const electronAPI = {
   // Original methods
 
   openSettingsPortal: () => ipcRenderer.invoke("open-settings-portal"),
-  openInterviewContextFile: () => ipcRenderer.invoke("open-interview-context-file"),
+  openInterviewContextFile: (draftPath?: string) => ipcRenderer.invoke("open-interview-context-file", draftPath),
   setOpacity: (opacity: number) => ipcRenderer.invoke("set-opacity", opacity),
   updateContentDimensions: (dimensions: { width: number; height: number }) =>
     ipcRenderer.invoke("update-content-dimensions", dimensions),
@@ -80,8 +81,8 @@ const electronAPI = {
   getCompanionStatus: () => ipcRenderer.invoke("companion-get-status"),
   startCompanion: () => ipcRenderer.invoke("companion-start"),
   stopCompanion: () => ipcRenderer.invoke("companion-stop"),
-  refreshCompanionPairing: () => ipcRenderer.invoke("companion-refresh-pairing"),
-  disconnectCompanionPhone: () => ipcRenderer.invoke("companion-disconnect-phone"),
+  refreshCompanionPairing: (role: "display" | "camera" = "display") => ipcRenderer.invoke("companion-refresh-pairing", role),
+  disconnectCompanionPhone: (role: "display" | "camera" = "display") => ipcRenderer.invoke("companion-disconnect-phone", role),
 
 
 
@@ -259,7 +260,15 @@ const electronAPI = {
 
   // New methods for OpenAI API integration
   getConfig: () => ipcRenderer.invoke("get-config"),
+  testLLMConnection: (request: LLMConnectionTestRequest) => ipcRenderer.invoke("test-llm-connection", request),
+  cancelLLMConnectionTest: (id: string) => ipcRenderer.invoke("cancel-llm-connection-test", id),
   updateConfig: (config: {
+    fallbackEnabled?: boolean;
+    fallbackApiProvider?: "openai-compatible" | "anthropic";
+    fallbackApiKey?: string;
+    fallbackBaseURL?: string;
+    fallbackModel?: string;
+    llmTimeoutSeconds?: number;
     questionMode?: "coding" | "iq";
     apiKey?: string;
     apiProvider?: "openai-compatible" | "anthropic";
@@ -312,6 +321,7 @@ const electronAPI = {
       .invoke("log-from-renderer", { level, message, meta })
       .catch(() => undefined)
   },
+  getStorageUsage: () => ipcRenderer.invoke("get-storage-usage"),
   getLogInfo: () => ipcRenderer.invoke("get-log-info"),
   openLogDirectory: () => ipcRenderer.invoke("open-log-directory")
 }

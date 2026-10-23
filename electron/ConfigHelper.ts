@@ -11,6 +11,12 @@ export type QuestionMode = "coding" | "iq";
 
 export interface Config {
   questionMode: QuestionMode;
+  fallbackEnabled: boolean;
+  fallbackApiProvider: APIProvider;
+  fallbackApiKey: string;
+  fallbackBaseURL: string;
+  fallbackModel: string;
+  llmTimeoutSeconds: number;
   apiKey: string;
   apiProvider: APIProvider;
   baseURL: string;
@@ -38,6 +44,12 @@ export class ConfigHelper extends EventEmitter {
   private configPath: string;
   private defaultConfig: Config = {
     questionMode: "coding",
+    fallbackEnabled: false,
+    fallbackApiProvider: "openai-compatible",
+    fallbackApiKey: "",
+    fallbackBaseURL: "",
+    fallbackModel: "",
+    llmTimeoutSeconds: 90,
     apiKey: "",
     apiProvider: "openai-compatible",
     baseURL: "",
@@ -176,6 +188,12 @@ export class ConfigHelper extends EventEmitter {
         if (config.questionMode !== "coding" && config.questionMode !== "iq") {
           config.questionMode = "coding";
         }
+        config.fallbackEnabled = config.fallbackEnabled === true;
+        config.fallbackApiProvider = config.fallbackApiProvider === "anthropic" ? "anthropic" : "openai-compatible";
+        for (const key of ["fallbackApiKey", "fallbackBaseURL", "fallbackModel"] as const) {
+          config[key] = typeof config[key] === "string" ? config[key].trim() : "";
+        }
+        config.llmTimeoutSeconds = Math.min(180, Math.max(15, Math.floor(Number(config.llmTimeoutSeconds) || 90)));
 
         // Older versions persisted the manually selected language directly
         // in `language`. That value must not become a hidden default now that
@@ -308,11 +326,25 @@ export class ConfigHelper extends EventEmitter {
       if (updates.language !== undefined) {
         newConfig.languageDetectionSource = updates.language === "auto" ? "auto" : "detected";
       }
+      newConfig.fallbackEnabled = newConfig.fallbackEnabled === true;
+      newConfig.fallbackApiProvider = newConfig.fallbackApiProvider === "anthropic" ? "anthropic" : "openai-compatible";
+      for (const key of ["fallbackApiKey", "fallbackBaseURL", "fallbackModel"] as const) {
+        newConfig[key] = typeof newConfig[key] === "string" ? newConfig[key].trim() : "";
+      }
+      newConfig.llmTimeoutSeconds = Math.min(180, Math.max(15, Math.floor(Number(newConfig.llmTimeoutSeconds) || 90)));
+      if (newConfig.fallbackEnabled) {
+        if (!newConfig.fallbackApiKey || !newConfig.fallbackModel) throw new Error("备用线路的 Key 和模型不能为空");
+        if (newConfig.fallbackApiProvider === "openai-compatible") {
+          const endpoint = new URL(newConfig.fallbackBaseURL);
+          if (!["http:", "https:"].includes(endpoint.protocol)) throw new Error("备用线路地址必须为 HTTP(S)");
+          if (endpoint.username || endpoint.password) throw new Error("请在 API Key 字段填写凭据");
+        }
+      }
       this.saveConfig(newConfig);
       
       // Only emit update event for changes other than opacity
       // This prevents re-initializing the AI client when only opacity changes
-      if (updates.questionMode !== undefined || updates.apiKey !== undefined || updates.apiProvider !== undefined || updates.baseURL !== undefined ||
+      if (updates.fallbackEnabled !== undefined || updates.fallbackApiProvider !== undefined || updates.fallbackApiKey !== undefined || updates.fallbackBaseURL !== undefined || updates.fallbackModel !== undefined || updates.llmTimeoutSeconds !== undefined || updates.questionMode !== undefined || updates.apiKey !== undefined || updates.apiProvider !== undefined || updates.baseURL !== undefined ||
           updates.extractionModel !== undefined || updates.solutionApiKey !== undefined ||
           updates.solutionBaseURL !== undefined || updates.solutionModel !== undefined ||
           updates.debuggingModel !== undefined || updates.streamingEnabled !== undefined ||

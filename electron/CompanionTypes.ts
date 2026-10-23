@@ -1,4 +1,15 @@
+export type PeripheralRole = "display" | "camera"
+
+export interface PeripheralStatus {
+  paired: boolean
+  connected: boolean
+  pairingUrls?: Array<{ label: string; url: string }>
+  pairingExpiresAt?: number
+}
+
 export interface CompanionStatus {
+  display?: PeripheralStatus
+  camera?: PeripheralStatus
   captureSource?: "screen" | "phone"
   cameraReady?: boolean
   running: boolean
@@ -41,6 +52,8 @@ export interface CompanionVoiceSource {
 }
 
 export interface CompanionSnapshot {
+  captureSource?: "screen" | "phone"
+  cameraReady?: boolean
   busy: boolean
   currentSessionId: string
   sessions: CompanionSessionSummary[]

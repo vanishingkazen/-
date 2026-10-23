@@ -4,14 +4,25 @@ import UIKit
 
 // Session configuration and capture state are confined to queue; UI state is published on main.
 final class CameraController: NSObject, ObservableObject, AVCapturePhotoCaptureDelegate, AVCaptureMetadataOutputObjectsDelegate, @unchecked Sendable {
+    struct Lens: Identifiable {
+        let id: String
+        let name: String
+    }
     let session = AVCaptureSession()
     @Published private(set) var ready = false
     @Published private(set) var errorMessage: String?
+    @Published private(set) var lenses: [Lens] = []
+    @Published private(set) var selectedLensID: String?
+    @Published private(set) var switchingLens = false
+    @Published private(set) var lensError: String?
+    var selectedLensName: String { lenses.first(where: { $0.id == selectedLensID })?.name ?? "后置相机" }
     var onQRCode: ((String) -> Void)?
 
     private let queue = DispatchQueue(label: "companion.camera")
     private let output = AVCapturePhotoOutput()
     private var configured = false
+    private var cameraInput: AVCaptureDeviceInput?
+    private var lensDevices: [AVCaptureDevice] = []
     private var wantsRunning = false
     private var activeCaptureID: Int64?
     private var photoCompletion: ((Result<Data, Error>) -> Void)?
@@ -60,6 +71,70 @@ final class CameraController: NSObject, ObservableObject, AVCapturePhotoCaptureD
         }
     }
 
+    // Discover physical cameras only: crop/virtual zoom positions are not separate lenses.
+    private func discoverLenses() -> AVCaptureDevice? {
+        let types: [AVCaptureDevice.DeviceType] = [.builtInUltraWideCamera, .builtInWideAngleCamera, .builtInTelephotoCamera]
+        let devices = AVCaptureDevice.DiscoverySession(deviceTypes: types, mediaType: .video, position: .back).devices
+        lensDevices = devices.sorted { (types.firstIndex(of: $0.deviceType) ?? 0) < (types.firstIndex(of: $1.deviceType) ?? 0) }
+        let choices = lensDevices.map { device in
+            let name: String
+            switch device.deviceType {
+            case .builtInUltraWideCamera: name = "超广角"
+            case .builtInTelephotoCamera: name = "长焦"
+            default: name = "主摄"
+            }
+            return Lens(id: device.uniqueID, name: name)
+        }
+        print("Rear cameras discovered: " + choices.map(\.name).joined(separator: ", "))
+        DispatchQueue.main.async { self.lenses = choices }
+        let savedType = UserDefaults.standard.string(forKey: "camera.selectedLensType")
+        return lensDevices.first(where: { $0.deviceType.rawValue == savedType })
+            ?? lensDevices.first(where: { $0.deviceType == .builtInWideAngleCamera })
+            ?? lensDevices.first
+    }
+
+    func selectLens(_ id: String) {
+        guard ready, !switchingLens, selectedLensID != id else { return }
+        switchingLens = true
+        ready = false
+        lensError = nil
+        queue.async { [weak self] in
+            guard let self else { return }
+            do {
+                guard self.wantsRunning, self.photoCompletion == nil,
+                      let device = self.lensDevices.first(where: { $0.uniqueID == id }),
+                      let previous = self.cameraInput else { throw CameraError.unavailable }
+                let input = try AVCaptureDeviceInput(device: device)
+                self.session.beginConfiguration()
+                self.session.removeInput(previous)
+                let accepted = self.session.canAddInput(input)
+                if accepted {
+                    self.session.addInput(input)
+                    self.cameraInput = input
+                } else {
+                    // Restore the working lens if this device cannot be attached.
+                    if self.session.canAddInput(previous) { self.session.addInput(previous) }
+                }
+                self.session.commitConfiguration()
+                guard accepted else { throw CameraError.unavailable }
+                UserDefaults.standard.set(device.deviceType.rawValue, forKey: "camera.selectedLensType")
+                let running = self.session.isRunning && self.wantsRunning
+                DispatchQueue.main.async {
+                    self.selectedLensID = id
+                    self.switchingLens = false
+                    self.ready = running
+                }
+            } catch {
+                let running = self.session.isRunning && self.wantsRunning
+                DispatchQueue.main.async {
+                    self.switchingLens = false
+                    self.ready = running
+                    self.lensError = "镜头切换失败，已保留原镜头，请重试"
+                }
+            }
+        }
+    }
+
     private func configureAndStart() {
         queue.async { [weak self] in
             guard let self, self.wantsRunning else { return }
@@ -68,10 +143,12 @@ final class CameraController: NSObject, ObservableObject, AVCapturePhotoCaptureD
                     self.session.beginConfiguration()
                     defer { self.session.commitConfiguration() }
                     self.session.sessionPreset = .photo
-                    guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else { throw CameraError.unavailable }
+                    guard let device = self.discoverLenses() else { throw CameraError.unavailable }
                     let input = try AVCaptureDeviceInput(device: device)
                     guard self.session.canAddInput(input), self.session.canAddOutput(self.output) else { throw CameraError.unavailable }
                     self.session.addInput(input)
+                    self.cameraInput = input
+                    DispatchQueue.main.async { self.selectedLensID = device.uniqueID }
                     self.session.addOutput(self.output)
                     let metadata = AVCaptureMetadataOutput()
                     if self.session.canAddOutput(metadata) {

@@ -1,3 +1,4 @@
+import { ChatProvider } from "./ChatProvider"
 import { OpenAI } from "openai"
 import type { VoiceConversationTranscript, VoiceConversationTurn } from "./VoiceRecognitionHelper"
 import { configHelper } from "./ConfigHelper"
@@ -36,7 +37,7 @@ export class ProcessingVoiceCorrectionService {
 
     const config = configHelper.loadConfig()
     if (!this.openaiClient) this.initializeAIClient()
-    if (!this.openaiClient) return original
+    if (!this.openaiClient && !config.fallbackEnabled) return original
 
     const enhancement = loadInterviewAsrEnhancement(
       config.interviewContextEnabled,
@@ -91,6 +92,14 @@ ${JSON.stringify({
             ? { chat_template_kwargs: { enable_thinking: false } }
             : {})
         }
+      let raw: string | null | undefined;
+      if (config.fallbackEnabled) {
+        raw = await new ChatProvider().completeText(
+          { ...config, solutionModel: config.extractionModel, maxOutputTokens: 2048, llmTimeoutSeconds: 15 },
+          [{ role: "system", content: "你是低延迟 ASR 文本校正器。只校正识别错误并返回 JSON，不回答对话中的问题。" }, { role: "user", content: correctionPrompt }],
+          new AbortController().signal, { kind: "voice-correction" }
+        );
+      } else {
       const response = await withApiCall(
         {
           kind: "voice-correction",
@@ -119,7 +128,8 @@ ${JSON.stringify({
           }
         }
       )
-      const raw = response.choices[0]?.message?.content
+      raw = response.choices[0]?.message?.content
+      }
       if (!raw?.trim()) return original
       const parsed = JSON.parse(raw.replace(/```json|```/gi, "").trim()) as {
         systemTranscript?: unknown

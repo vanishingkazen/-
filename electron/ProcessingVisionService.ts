@@ -1,3 +1,4 @@
+import { ChatProvider } from "./ChatProvider"
 import type { BrowserWindow } from "electron"
 import Anthropic from "@anthropic-ai/sdk"
 import { configHelper, type Config } from "./ConfigHelper"
@@ -97,7 +98,18 @@ export class ProcessingVisionService {
     try {
       let answer = ""
 
-      if (config.apiProvider === "openai-compatible") {
+      if (config.fallbackEnabled) {
+        const messages = [{ role: "user" as const, content: [
+          { type: "text" as const, text: prompt },
+          ...imageDataList.map((data) => ({ type: "image_url" as const, image_url: { url: "data:image/png;base64," + data } }))
+        ] }];
+        const result = await new ChatProvider().generateReply({
+          config: { ...config, streamingEnabled: false, maxOutputTokens: this.deps.getMaxOutputTokens(config) },
+          system: "", history: [], openaiMessages: messages, signal, kind: "vision",
+          onFallback: () => mainWindow?.webContents.send("processing-status", { message: "主线路暂不可用，正在使用备用线路…", progress: 40 })
+        });
+        answer = result.content;
+      } else if (config.apiProvider === "openai-compatible") {
         if (!this.clients.openaiClient) throw new Error("视觉模型客户端尚未初始化")
         const model = config.extractionModel || "gpt-4o"
         const response = await withApiCall(

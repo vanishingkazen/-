@@ -4,6 +4,7 @@ import { imageDataUrl } from "./ChatImageUtils"
 import { withApiCall } from "./ApiTelemetry"
 import type { Config } from "./ConfigHelper"
 import type { ChatMessage } from "./ChatTypes"
+import { emptyLLMReply, withLLMFallback } from "./LLMFallback"
 
 export type ProviderMessage = {
   role: "system" | "user" | "assistant"
@@ -15,12 +16,14 @@ export interface ChatReplyRequest {
   system: string
   history: ChatMessage[]
   openaiMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[]
+  prepareOpenAIMessages?: (config: Config, signal: AbortSignal) => Promise<OpenAI.Chat.Completions.ChatCompletionMessageParam[]>
   signal: AbortSignal
   onStream?: (content: string) => void
   /** 思考进度回调（推理模型），参数为已思考的字符数 */
   onReasoning?: (reasoningChars: number) => void
   /** 遥测场景标签，缺省为 chat */
   kind?: string
+  onFallback?: () => void
 }
 
 export interface ChatReplyResult {
@@ -122,6 +125,19 @@ export class ChatProvider {
     signal: AbortSignal,
     options: { kind?: string; label?: string } = {}
   ): Promise<string> {
+    return withLLMFallback(config, signal, async (route, attemptSignal) => {
+      const text = await this.completeTextOnce(route, messages, attemptSignal, options)
+      if (!text.trim()) throw emptyLLMReply("模型没有返回正文")
+      return text
+    })
+  }
+
+  private async completeTextOnce(
+    config: Config,
+    messages: ProviderMessage[],
+    signal: AbortSignal,
+    options: { kind?: string; label?: string } = {}
+  ): Promise<string> {
     const kind = options.kind || "complete-text"
     const notes = options.label ? { label: options.label } : undefined
 
@@ -202,10 +218,24 @@ export class ChatProvider {
   }
 
   public async generateReply(request: ChatReplyRequest): Promise<ChatReplyResult> {
-    if (request.config.apiProvider === "openai-compatible") {
-      return this.generateOpenAIReply(request)
-    }
-    return this.generateAnthropicReply(request)
+    let emittedContent = false
+    return withLLMFallback(request.config, request.signal, async (config, signal) => {
+      const attempt: ChatReplyRequest = {
+        ...request, config, signal,
+        openaiMessages: config.apiProvider === "openai-compatible" && request.prepareOpenAIMessages
+          ? await request.prepareOpenAIMessages(config, signal) : request.openaiMessages,
+        onStream: (content) => {
+          if (signal.aborted) return
+          if (content) emittedContent = true
+          request.onStream?.(content)
+        },
+        onReasoning: (count) => { if (!signal.aborted) request.onReasoning?.(count) }
+      }
+      const reply = config.apiProvider === "openai-compatible"
+        ? await this.generateOpenAIReply(attempt) : await this.generateAnthropicReply(attempt)
+      if (!reply.content.trim()) throw emptyLLMReply("模型没有返回正文")
+      return reply
+    }, { canSwitch: () => !emittedContent, onFallback: request.onFallback })
   }
 
   private async generateOpenAIReply(request: ChatReplyRequest): Promise<ChatReplyResult> {
@@ -314,7 +344,7 @@ export class ChatProvider {
 
       if (!tracked.result.trim()) {
         request.onReasoning?.(tracked.reasoningChars)
-        throw new Error(describeEmptyReply(tracked.finishReason, tracked.reasoningChars))
+        throw emptyLLMReply(describeEmptyReply(tracked.finishReason, tracked.reasoningChars))
       }
       return { content: tracked.result, streamed: true }
     }
@@ -344,7 +374,7 @@ export class ChatProvider {
 
     const content = response.choices[0]?.message?.content || ""
     if (!content.trim()) {
-      throw new Error(
+      throw emptyLLMReply(
         describeEmptyReply(response.choices[0]?.finish_reason ?? null, 0)
       )
     }
@@ -369,7 +399,7 @@ export class ChatProvider {
             max_tokens: request.config.maxOutputTokens,
             temperature: 0.2,
             system: request.system,
-            messages: request.history.map((message) => ({
+            messages: request.history.length ? request.history.map((message) => ({
               role: message.role,
               content: [
                 { type: "text" as const, text: message.content },
@@ -389,7 +419,7 @@ export class ChatProvider {
                   ]
                 })
               ]
-            }))
+            })) : this.anthropicMessages(request.openaiMessages)
           },
           { signal: request.signal }
         ),
@@ -408,6 +438,24 @@ export class ChatProvider {
       ...(config.baseURL ? { baseURL: config.baseURL.replace(/\/$/, "") } : {}),
       timeout: 180000,
       maxRetries: 0
+    })
+  }
+
+  private anthropicMessages(messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[]): Anthropic.MessageParam[] {
+    return messages.filter((message) => message.role === "user" || message.role === "assistant").map((message) => {
+      const content: Anthropic.ContentBlockParam[] = []
+      if (typeof message.content === "string") content.push({ type: "text", text: message.content })
+      else if (Array.isArray(message.content)) {
+        for (const part of message.content) {
+          if (part.type === "text") content.push({ type: "text", text: part.text })
+          else if (part.type === "image_url") {
+            const match = part.image_url.url.match(/^data:(image\/(?:png|jpeg|gif|webp));base64,(.+)$/s)
+            if (!match) throw new Error("备用 Anthropic 线路需要本地图片数据")
+            content.push({ type: "image", source: { type: "base64", media_type: match[1] as "image/png" | "image/jpeg" | "image/gif" | "image/webp", data: match[2] } })
+          } else throw new Error("当前消息格式无法转换为 Anthropic 输入，请使用兼容的备用线路")
+        }
+      }
+      return { role: message.role as "user" | "assistant", content }
     })
   }
 

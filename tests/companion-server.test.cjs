@@ -74,17 +74,20 @@ function request(port, hostHeader, requestPath, options = {}) {
   })
 }
 
-function waitForSocketMessage(socket) {
+function waitForSocketMessage(socket, type) {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("websocket message timeout")), 2000)
-    socket.once("message", (raw) => {
-      clearTimeout(timer)
-      try { resolve(JSON.parse(String(raw))) } catch (error) { reject(error) }
-    })
-    socket.once("error", (error) => {
-      clearTimeout(timer)
-      reject(error)
-    })
+    const cleanup = () => { clearTimeout(timer); socket.off("message", listener); socket.off("error", onError) }
+    const listener = (raw) => {
+      try {
+        const event = JSON.parse(String(raw))
+        if (type && event.type !== type) return
+        cleanup(); resolve(event)
+      } catch (error) { cleanup(); reject(error) }
+    }
+    const onError = (error) => { cleanup(); reject(error) }
+    const timer = setTimeout(() => { cleanup(); reject(new Error(`websocket message timeout: ${type || "any"}`)) }, 3000)
+    socket.on("message", listener)
+    socket.once("error", onError)
   })
 }
 
@@ -279,11 +282,11 @@ test("手机相机：遥控拍照入队、重复上传去重、会话切换拒�
   let socket
   try {
     await server.start()
-    const pairing = new URL(server.getStatus().pairingUrls[0].url)
+    const pairing = new URL(server.getStatus().camera.pairingUrls[0].url)
     const port = Number(pairing.port)
     const origin = pairing.origin
     const host = pairing.host
-    const pair = await request(port, host, "/api/pair", { method: "POST", origin, body: { token: pairing.hash.slice(1) } })
+    const pair = await request(port, host, "/api/pair", { method: "POST", origin, body: { token: pairing.hash.slice(1), role: "camera" } })
     const token = pair.json.token
     await assert.rejects(server.takePhonePhoto(), /未就绪/)
     socket = new WebSocket(`ws://127.0.0.1:${port}/api/events`, { headers: { Host: host, Origin: origin } })
@@ -298,7 +301,7 @@ test("手机相机：遥控拍照入队、重复上传去重、会话切换拒�
     assert.equal(server.usesPhoneCamera(), true)
     assert.throws(() => server.setCaptureSource("invalid"), /无效/)
 
-    const commandPromise = waitForSocketMessage(socket)
+    const commandPromise = waitForSocketMessage(socket, "capture.request")
     const capture = server.takePhonePhoto()
     const command = await commandPromise
     assert.equal(command.type, "capture.request")
@@ -332,7 +335,7 @@ test("手机相机：遥控拍照入队、重复上传去重、会话切换拒�
     const cancelled = server.takePhonePhoto()
     const rejected = assert.rejects(cancelled, /连接已关闭/)
     await requestStarted
-    server.disconnectPhone()
+    server.disconnectPhone("camera")
     await rejected
     assert.equal(server.getStatus().cameraReady, false)
   } finally {
@@ -358,6 +361,81 @@ test("手机相机请求超时后可以重试", async (t) => {
   assert.equal(requests.completedPath(second.id), "photo.png")
   requests.cancel()
   assert.equal(requests.completedPath(second.id), undefined)
+})
+
+
+test("显示和拍摄分别配对、并发在线，重连和撤销互不影响", async () => {
+  const session = { id: "multi-peripheral", title: "独立外设", messages: [] }
+  const server = new CompanionServer({
+    getChatService: () => ({ isBusy: () => false, getCurrentSession: () => session, listSessions: () => [session] }),
+    getVoiceRecognitionHelper: () => null,
+    getScreenshotPaths: () => [], takeScreenshot: async () => capturedImage,
+    getImagePreview: async () => "", deleteScreenshot: async () => ({ success: true }),
+    notifyScreenshotTaken: () => {}, notifySessionSelected: () => {}, getStaticDirectory: () => staticDirectory
+  })
+  const sockets = []
+  try {
+    const status = await server.start()
+    const displayURL = new URL(status.display.pairingUrls[0].url)
+    const cameraURL = new URL(status.camera.pairingUrls[0].url)
+    const port = Number(displayURL.port), host = displayURL.host, origin = displayURL.origin
+    assert.notEqual(displayURL.hash, cameraURL.hash)
+    const mismatch = await request(port, host, "/api/pair", { method: "POST", origin, body: { token: displayURL.hash.slice(1), role: "camera" } })
+    assert.equal(mismatch.status, 401)
+    const pair = async (url, role) => (await request(port, host, "/api/pair", { method: "POST", origin, body: { token: url.hash.slice(1), role } })).json.token
+    const displayToken = await pair(displayURL, "display")
+    const cameraToken = await pair(cameraURL, "camera")
+    assert.notEqual(displayToken, cameraToken)
+    const open = async (token, type) => {
+      const socket = new WebSocket(`ws://127.0.0.1:${port}/api/events`, { headers: { Host: host, Origin: origin } })
+      sockets.push(socket)
+      await new Promise((resolve, reject) => { socket.once("open", resolve); socket.once("error", reject) })
+      const snapshot = waitForSocketMessage(socket, type)
+      socket.send(JSON.stringify({ type: "auth", token }))
+      const event = await snapshot
+      return { socket, event }
+    }
+    const display = (await open(displayToken, "snapshot")).socket
+    const camera = await open(cameraToken, "camera.snapshot")
+    assert.equal(camera.event.state.session, undefined)
+    assert.equal(server.getStatus().display.connected, true)
+    assert.equal(server.getStatus().camera.connected, true)
+    assert.equal((await request(port, host, "/api/state", { token: cameraToken })).status, 403)
+    assert.equal((await request(port, host, "/api/camera/state", { token: displayToken })).status, 403)
+    assert.equal((await request(port, host, "/api/camera/state", { token: cameraToken })).status, 200)
+    // A display cannot advertise itself as a camera.
+    const pong = waitForSocketMessage(display, "pong")
+    display.send(JSON.stringify({ type: "camera.ready", ready: true }))
+    display.send(JSON.stringify({ type: "ping" }))
+    await pong
+    assert.equal(server.getStatus().cameraReady, false)
+    const cameraReady = waitForSocketMessage(camera.socket, "camera.snapshot")
+    camera.socket.send(JSON.stringify({ type: "camera.ready", ready: true }))
+    await cameraReady
+    assert.equal(server.getStatus().cameraReady, true)
+    const replacement = await open(cameraToken, "camera.snapshot")
+    assert.equal(display.readyState, WebSocket.OPEN)
+    assert.equal(server.getStatus().display.connected, true)
+    const stream = waitForSocketMessage(display, "chat-stream")
+    server.publish("chat-stream", { requestId: "only-display", sessionId: session.id, content: "回答", done: true })
+    assert.equal((await stream).data.content, "回答")
+    server.disconnectPhone("display")
+    assert.equal(server.getStatus().display.paired, false)
+    assert.equal(server.getStatus().camera.connected, true)
+    assert.equal(replacement.socket.readyState, WebSocket.OPEN)
+    assert.equal((await request(port, host, "/api/camera/state", { token: cameraToken })).status, 200)
+    server.refreshPairing("display")
+    const secondDisplayToken = await pair(new URL(server.getStatus().display.pairingUrls[0].url), "display")
+    const secondDisplay = (await open(secondDisplayToken, "snapshot")).socket
+    server.disconnectPhone("camera")
+    assert.equal(server.getStatus().display.connected, true)
+    assert.equal(secondDisplay.readyState, WebSocket.OPEN)
+    assert.equal((await request(port, host, "/api/camera/state", { token: cameraToken })).status, 401)
+    assert.equal((await request(port, host, "/api/state", { token: secondDisplayToken })).status, 200)
+  } finally {
+    sockets.forEach((socket) => socket.terminate())
+    await server.stop()
+  }
 })
 
 

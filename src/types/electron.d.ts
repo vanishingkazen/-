@@ -12,8 +12,8 @@ export interface ElectronAPI {
   getCompanionStatus: () => Promise<CompanionStatus>
   startCompanion: () => Promise<{ success: boolean; status?: CompanionStatus; error?: string }>
   stopCompanion: () => Promise<{ success: boolean; status?: CompanionStatus }>
-  refreshCompanionPairing: () => Promise<{ success: boolean; status?: CompanionStatus; error?: string }>
-  disconnectCompanionPhone: () => Promise<{ success: boolean; status?: CompanionStatus }>
+  refreshCompanionPairing: (role?: "display" | "camera") => Promise<{ success: boolean; status?: CompanionStatus; error?: string }>
+  disconnectCompanionPhone: (role?: "display" | "camera") => Promise<{ success: boolean; status?: CompanionStatus; error?: string }>
   onCompanionStatus: (callback: (status: CompanionStatus) => void) => () => void
   onCompanionSessionSelected: (callback: (session: ChatSession) => void) => () => void
   updateContentDimensions: (dimensions: { width: number; height: number }) => Promise<void>
@@ -43,6 +43,7 @@ export interface ElectronAPI {
     requestId: string
     sessionId: string
     reasoningChars: number
+    message?: string
   }) => void) => () => void
   onChatContextCompressed: (callback: (data: { sessionId: string; summary: string }) => void) => () => void
   onChatSuccess: (callback: (data: {
@@ -130,12 +131,18 @@ export interface ElectronAPI {
     characterCount: number
     error?: string
   }>
-  openInterviewContextFile: () => Promise<{ success: boolean; path?: string; error?: string }>
+  openInterviewContextFile: (draftPath?: string) => Promise<{ success: boolean; path?: string; error?: string }>
 
   openSettingsPortal: () => Promise<{ success: boolean; error?: string }>
   setOpacity: (opacity: number) => Promise<{ success: boolean; opacity: number; error?: string }>
   getPlatform: () => string
   getConfig: () => Promise<{
+    fallbackEnabled: boolean
+    fallbackApiProvider: "openai-compatible" | "anthropic"
+    fallbackApiKey: string
+    fallbackBaseURL: string
+    fallbackModel: string
+    llmTimeoutSeconds: number
     questionMode: "coding" | "iq"
     apiKey: string
     apiProvider: "openai-compatible" | "anthropic"
@@ -158,7 +165,16 @@ export interface ElectronAPI {
     interviewContextEnabled: boolean
     interviewContextPath: string
   }>
+  testLLMConnection: (request: import("../../electron/LLMConnectionTest").LLMConnectionTestRequest) => Promise<import("../../electron/LLMConnectionTest").LLMConnectionTestResult>
+  cancelLLMConnectionTest: (id: string) => Promise<void>
+  getStorageUsage: () => Promise<import("../../electron/StorageUsage").StorageUsage>
   updateConfig: (config: {
+    fallbackEnabled?: boolean
+    fallbackApiProvider?: "openai-compatible" | "anthropic"
+    fallbackApiKey?: string
+    fallbackBaseURL?: string
+    fallbackModel?: string
+    llmTimeoutSeconds?: number
     questionMode?: "coding" | "iq"
     apiKey?: string
     apiProvider?: "openai-compatible" | "anthropic"

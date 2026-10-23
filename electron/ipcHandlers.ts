@@ -8,6 +8,8 @@ import { ensureInterviewContextFile, getInterviewContextStatus } from "./Intervi
 import type { ChatSessionSeed } from "./ChatService"
 import type { CompanionStatus } from "./CompanionTypes"
 import { getLogInfo, logFromRenderer, openLogDirectory } from "./logger"
+import { testLLMConnection } from "./LLMConnectionTest"
+import { getStorageUsage } from "./StorageUsage"
 
 /** 只接受本应用窗口发来的日志，避免其它渲染进程写入日志文件 */
 function isTrustedLogSender(sender: WebContents): boolean {
@@ -20,6 +22,38 @@ function isTrustedLogSender(sender: WebContents): boolean {
 
 export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
   console.log("Initializing IPC handlers")
+  const connectionTests = new Map<string, { id: string; controller: AbortController }>()
+
+  ipcMain.handle("get-storage-usage", (event) => {
+    if (!isTrustedLogSender(event.sender)) throw new Error("请求来源无效")
+    return getStorageUsage()
+  })
+
+  ipcMain.handle("test-llm-connection", async (event, payload: unknown) => {
+    if (!isTrustedLogSender(event.sender)) return { success: false, message: "请求来源无效", elapsedMs: 0 }
+    const input = payload as { id?: unknown; route?: unknown }
+    if (!input || typeof input.id !== "string" || input.id.length > 100 || !["primary", "fallback"].includes(String(input.route))) {
+      return { success: false, message: "测试请求无效", elapsedMs: 0 }
+    }
+    const key = event.sender.id + ":" + input.route
+    connectionTests.get(key)?.controller.abort()
+    const controller = new AbortController()
+    const job = { id: input.id, controller }
+    connectionTests.set(key, job)
+    const cancel = () => controller.abort()
+    event.sender.once("destroyed", cancel)
+    try { return await testLLMConnection(payload, controller.signal) } finally {
+      event.sender.removeListener("destroyed", cancel)
+      if (connectionTests.get(key) === job) connectionTests.delete(key)
+    }
+  })
+  ipcMain.handle("cancel-llm-connection-test", (event, id: unknown) => {
+    if (!isTrustedLogSender(event.sender) || typeof id !== "string") return
+    for (const route of ["primary", "fallback"]) {
+      const job = connectionTests.get(event.sender.id + ":" + route)
+      if (job?.id === id) job.controller.abort()
+    }
+  })
 
   // 日志：前端转发、日志信息与日志目录
   ipcMain.handle("log-from-renderer", (event, payload) => {
@@ -61,9 +95,9 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     success: true,
     status: await deps.companionServer?.stop()
   }))
-  ipcMain.handle("companion-refresh-pairing", () => {
+  ipcMain.handle("companion-refresh-pairing", (_event, role: unknown = "display") => {
     try {
-      return { success: true, status: deps.companionServer?.refreshPairing() }
+      return { success: true, status: deps.companionServer?.refreshPairing(role) }
     } catch (error) {
       return {
         success: false,
@@ -72,10 +106,13 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
       }
     }
   })
-  ipcMain.handle("companion-disconnect-phone", () => ({
-    success: true,
-    status: deps.companionServer?.disconnectPhone()
-  }))
+  ipcMain.handle("companion-disconnect-phone", (_event, role: unknown = "display") => {
+    try {
+      return { success: true, status: deps.companionServer?.disconnectPhone(role) }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : "无法断开外设" }
+    }
+  })
 
   // Configuration handlers
   ipcMain.handle("get-config", () => {
@@ -136,11 +173,14 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     return { ...status, enabled: Boolean(enabled), success: true }
   })
 
-  ipcMain.handle("open-interview-context-file", async () => {
+  ipcMain.handle("open-interview-context-file", async (event, draftPath?: unknown) => {
     try {
+      if (draftPath !== undefined && (!isTrustedLogSender(event.sender) || typeof draftPath !== "string" || draftPath.length > 4096)) {
+        return { success: false, error: "文件路径无效" }
+      }
       const config = configHelper.loadConfig()
-      const interviewContextPath = ensureInterviewContextFile(config.interviewContextPath)
-      if (config.interviewContextPath !== interviewContextPath) {
+      const interviewContextPath = ensureInterviewContextFile(typeof draftPath === "string" ? draftPath : config.interviewContextPath)
+      if (draftPath === undefined && config.interviewContextPath !== interviewContextPath) {
         configHelper.updateConfig({ interviewContextPath })
       }
       const error = await shell.openPath(interviewContextPath)
