@@ -74,7 +74,7 @@ function webpDimensions(buffer: Buffer): { width: number; height: number } | nul
   return null
 }
 
-function jpegDimensions(buffer: Buffer): { width: number; height: number } | null {
+export function jpegDimensions(buffer: Buffer): { width: number; height: number } | null {
   if (buffer.length < 4 || buffer[0] !== 0xff || buffer[1] !== 0xd8) return null
   let offset = 2
   while (offset + 9 < buffer.length) {

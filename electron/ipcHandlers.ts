@@ -38,6 +38,14 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     connected: false,
     addresses: []
   } satisfies CompanionStatus)
+  ipcMain.handle("companion-set-capture-source", (_event, source: unknown) => {
+    try {
+      if (!deps.companionServer) throw new Error("伴随服务尚未初始化")
+      return { success: true, status: deps.companionServer.setCaptureSource(source) }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : "无法设置图片来源" }
+    }
+  })
   ipcMain.handle("companion-start", async () => {
     try {
       return { success: true, status: await deps.companionServer?.start() }

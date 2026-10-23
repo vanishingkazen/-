@@ -74,7 +74,7 @@ export default function CompanionDialog({ onClose }: { onClose: () => void }) {
           <div className="flex items-center gap-3">
             <span className="grid h-10 w-10 place-items-center rounded-xl bg-indigo-50 text-indigo-600"><Smartphone size={19} /></span>
             <div>
-              <h2 id="companion-title" className="text-base font-semibold text-slate-800">手机浏览器伴随端</h2>
+              <h2 id="companion-title" className="text-base font-semibold text-slate-800">手机伴随与相机</h2>
               <p className="mt-1 text-xs text-slate-500">手机和笔记本需连接同一可信 Wi‑Fi</p>
             </div>
           </div>
@@ -84,6 +84,18 @@ export default function CompanionDialog({ onClose }: { onClose: () => void }) {
         <div className="mb-4 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] leading-relaxed text-amber-900">
           <AlertTriangle size={16} className="mt-0.5 shrink-0" />
           <p><strong>HTTP 明文传输：</strong>对话、截图和语音转写会在局域网中以未加密形式传输。配对码只控制访问、不提供加密；请勿在公共或不可信 Wi‑Fi 使用。</p>
+        </div>
+
+        <div className="mb-4 rounded-xl border border-slate-200 p-3">
+          <label className="flex items-center justify-between gap-3 text-sm text-slate-700">
+            图片采集来源
+            <select className="rounded-lg border border-slate-200 bg-white px-3 py-2" value={status.captureSource || "screen"} disabled={busy} onChange={(event) => void runAction(() => window.electronAPI.setCaptureSource(event.target.value as "screen" | "phone"))}>
+              <option value="screen">电脑截图</option>
+              <option value="phone">iPhone 拍照</option>
+            </select>
+          </label>
+          <p className="mt-2 text-xs text-slate-500">Cmd/Ctrl+H 和采集按钮使用此来源。手机拍照需要安装原生 App 并保持在前台。</p>
+          {status.captureSource === "phone" && <p className="mt-2 text-xs text-indigo-700">{status.cameraReady ? "iPhone 相机已就绪" : "等待 iPhone 相机就绪；也可切回电脑截图"}</p>}
         </div>
 
         {!status.running ? (
@@ -97,6 +109,7 @@ export default function CompanionDialog({ onClose }: { onClose: () => void }) {
           <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
             <div className="flex items-center gap-2 text-sm font-semibold text-emerald-800"><Check size={17} />{status.connected ? "手机已配对并连接" : "手机已配对，等待重新连接"}</div>
             <p className="mt-2 text-xs leading-relaxed text-emerald-800/80">手机断线后可使用已配对令牌重新连接。停止服务或断开设备后，当前授权会立即撤销。</p>
+            <p className="mt-2 text-xs leading-relaxed text-emerald-800/80">配对期间在电脑上截图后，PC 悬浮窗不会自动恢复；回到电脑后按 Cmd/Ctrl+B 可重新显示。</p>
             <div className="mt-4 flex flex-wrap gap-2">
               <button className="inline-flex h-9 items-center gap-2 rounded-lg border border-emerald-300 bg-white px-3 text-xs font-medium text-emerald-800 disabled:opacity-50" onClick={() => void runAction(() => window.electronAPI.disconnectCompanionPhone())} disabled={busy}>断开手机并重新配对</button>
               <button className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-600 disabled:opacity-50" onClick={() => void runAction(() => window.electronAPI.stopCompanion())} disabled={busy}>停止服务</button>
@@ -104,7 +117,7 @@ export default function CompanionDialog({ onClose }: { onClose: () => void }) {
           </div>
         ) : (
           <div className="flex flex-col items-center rounded-xl border border-slate-200 bg-slate-50 p-4">
-            <div className="mb-3 flex items-center gap-2 text-sm font-medium text-slate-700"><QrCode size={17} />用手机相机扫描配对</div>
+            <div className="mb-3 flex items-center gap-2 text-sm font-medium text-slate-700"><QrCode size={17} />用 iOS App 或手机相机扫码配对</div>
             {addressOptions.length > 1 && (
               <label className="mb-3 flex items-center gap-2 text-xs text-slate-600">
                 笔记本网络

@@ -4,6 +4,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto"
 import { WebSocket, WebSocketServer } from "ws"
+import { PhoneCameraRequests } from "./capture/PhoneCameraRequests"
 import { configHelper } from "./ConfigHelper"
 import type { ChatAttachment, ChatService } from "./ChatService"
 import type { VoiceRecognitionHelper } from "./VoiceRecognitionHelper"
@@ -14,6 +15,9 @@ const MAX_JSON_BODY_BYTES = 64 * 1024
 const IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"])
 
 export interface CompanionServerDeps {
+  takeDesktopScreenshot?: () => Promise<string>
+  importCameraPhoto?: (buffer: Buffer, isValid: () => boolean) => Promise<string>
+  getCaptureContext?: () => string
   getChatService: () => ChatService | null
   getVoiceRecognitionHelper: () => VoiceRecognitionHelper | null
   getScreenshotPaths: () => string[]
@@ -123,6 +127,10 @@ function readJson(request: IncomingMessage): Promise<Record<string, unknown>> {
 }
 
 export class CompanionServer {
+  private captureSource: "screen" | "phone" = "screen"
+  private cameraClient: WebSocket | null = null
+  private cameraReady = false
+  private readonly cameraRequests = new PhoneCameraRequests()
   private readonly deps: CompanionServerDeps
   private server: Server | null = null
   private sockets: WebSocketServer | null = null
@@ -143,6 +151,8 @@ export class CompanionServer {
 
   public getStatus(): CompanionStatus {
     return {
+      captureSource: this.captureSource,
+      cameraReady: this.cameraReady && this.cameraClient?.readyState === WebSocket.OPEN,
       running: Boolean(this.server),
       connected: [...this.clients].some((client) => client.readyState === WebSocket.OPEN),
       paired: Boolean(this.pairing?.sessionToken),
@@ -235,6 +245,32 @@ export class CompanionServer {
     return this.getStatus()
   }
 
+  public setCaptureSource(source: unknown): CompanionStatus {
+    if (source !== "screen" && source !== "phone") throw new Error("无效的图片来源")
+    this.captureSource = source
+    this.notifyStatus()
+    return this.getStatus()
+  }
+
+  public usesPhoneCamera(): boolean { return this.captureSource === "phone" }
+
+  private captureContext(): string {
+    return this.deps.getCaptureContext?.() || this.deps.getChatService()?.getCurrentSession().id || ""
+  }
+
+  public async takePhonePhoto(): Promise<string> {
+    if (!this.cameraReady || this.cameraClient?.readyState !== WebSocket.OPEN) {
+      throw new Error("手机相机未就绪，请打开 iOS App 并保持在前台，或切换为电脑截图")
+    }
+    const request = this.cameraRequests.start(this.captureContext())
+    try {
+      this.cameraClient.send(JSON.stringify({ type: "capture.request", requestId: request.id, expiresAt: request.expiresAt }))
+    } catch {
+      this.cameraRequests.fail(request.id, "无法发送拍照指令")
+    }
+    return request.result
+  }
+
   public refreshPairing(): CompanionStatus {
     if (!this.server) throw new Error("手机伴随服务尚未启动")
     if (this.pairing?.sessionToken) throw new Error("手机已配对，请先断开当前设备")
@@ -245,6 +281,9 @@ export class CompanionServer {
 
   public disconnectPhone(): CompanionStatus {
     this.pairing = null
+    this.cameraRequests.cancel()
+    this.cameraClient = null
+    this.cameraReady = false
     for (const client of this.clients) {
       try { client.close(4001, "Pairing revoked") } catch { /* already closed */ }
     }
@@ -258,6 +297,9 @@ export class CompanionServer {
     const sockets = this.sockets
     const server = this.server
     this.pairing = null
+    this.cameraRequests.cancel()
+    this.cameraClient = null
+    this.cameraReady = false
     this.clients.clear()
     this.sockets = null
     this.server = null
@@ -439,6 +481,67 @@ export class CompanionServer {
       return
     }
 
+    if (url.pathname === "/api/camera/request") {
+      if (!this.cameraReady || !this.cameraClient || !this.deps.importCameraPhoto) {
+        sendJson(response, 409, { success: false, error: "手机相机未就绪" })
+        return
+      }
+      try {
+        const capture = this.cameraRequests.start(this.captureContext())
+        sendJson(response, 200, { success: true, requestId: capture.id, expiresAt: capture.expiresAt })
+      } catch (error) {
+        sendJson(response, 409, { success: false, error: error instanceof Error ? error.message : "无法拍照" })
+      }
+      return
+    }
+    const photoMatch = url.pathname.match(/^\/api\/camera\/photo\/([a-f0-9-]{36})$/)
+    if (photoMatch) {
+      const id = photoMatch[1]
+      if (this.cameraRequests.completedPath(id)) {
+        request.resume()
+        sendJson(response, 200, { success: true })
+        return
+      }
+      if (this.cameraRequests.isUploading(id)) {
+        request.resume()
+        sendJson(response, 409, { success: false, error: "该照片正在上传" })
+        return
+      }
+      try {
+        if (!this.deps.importCameraPhoto || request.headers["content-type"] !== "image/jpeg") throw new Error("仅支持 JPEG 照片")
+        const context = this.captureContext()
+        this.cameraRequests.beginUpload(id, context)
+        const auth = request.headers.authorization
+        const valid = () => this.cameraRequests.isValid(id, this.captureContext()) && context === this.captureContext() && auth === `Bearer ${this.pairing?.sessionToken}`
+        const buffer = await new Promise<Buffer>((resolve, reject) => {
+          request.setTimeout(15_000, () => request.destroy(new Error("照片上传超时")))
+          const chunks: Buffer[] = []
+          let size = 0
+          request.on("data", (chunk: Buffer) => {
+            size += chunk.length
+            if (size > 8 * 1024 * 1024) { reject(new Error("照片超过 8MB")); request.destroy(); return }
+            chunks.push(chunk)
+          })
+          request.on("end", () => resolve(Buffer.concat(chunks)))
+          request.on("error", reject)
+          request.on("aborted", () => reject(new Error("照片上传中断")))
+        })
+        if (!valid()) throw new Error("拍照请求已失效")
+        const filepath = await this.deps.importCameraPhoto(buffer, valid)
+        this.cameraRequests.finish(id, filepath)
+        const preview = await this.deps.getImagePreview(filepath)
+        this.deps.notifyScreenshotTaken(filepath, preview)
+        this.broadcast({ type: "refresh" })
+        sendJson(response, 200, { success: true })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "照片上传失败"
+        this.cameraRequests.fail(id, message)
+        request.resume()
+        if (!response.destroyed) sendJson(response, 409, { success: false, error: message })
+      }
+      return
+    }
+
     const body = await readJson(request)
     const service = this.deps.getChatService()
     if (!service) {
@@ -486,7 +589,7 @@ export class CompanionServer {
           return
         }
         case "/api/screenshot": {
-          const screenshotPath = await this.deps.takeScreenshot()
+          const screenshotPath = await (this.deps.takeDesktopScreenshot || this.deps.takeScreenshot)()
           const preview = await this.deps.getImagePreview(screenshotPath)
           this.deps.notifyScreenshotTaken(screenshotPath, preview)
           this.broadcast({ type: "refresh" })
@@ -648,6 +751,9 @@ export class CompanionServer {
         return
       }
       authenticated = true
+      this.cameraRequests.cancel()
+      this.cameraClient = null
+      this.cameraReady = false
       clearTimeout(authTimeout)
       for (const other of this.clients) {
         if (other !== client) other.close(4001, "Replaced by reconnect")
@@ -670,9 +776,23 @@ export class CompanionServer {
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return
         payload = parsed as Record<string, unknown>
       } catch { return }
+      if (payload.type === "camera.ready") {
+        this.cameraClient = client
+        this.cameraReady = payload.ready === true
+        if (!this.cameraReady) this.cameraRequests.cancel()
+        this.notifyStatus()
+      }
+      if (payload.type === "capture.failed" && client === this.cameraClient && typeof payload.requestId === "string") {
+        this.cameraRequests.fail(payload.requestId, "手机拍摄失败，请检查相机权限并重试")
+      }
       if (payload.type === "ping") client.send(JSON.stringify({ type: "pong", at: Date.now() }))
     })
     client.on("close", () => {
+      if (this.cameraClient === client) {
+        this.cameraClient = null
+        this.cameraReady = false
+        this.cameraRequests.cancel()
+      }
       clearTimeout(authTimeout)
       this.clients.delete(client)
       this.notifyStatus()

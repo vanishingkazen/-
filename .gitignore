@@ -29,3 +29,9 @@ scripts/manual-notarize.js
 
 # Native addon build output
 native/**/build/
+
+# Local Xcode state and build output
+**/xcuserdata/
+**/*.xcuserstate
+/mobile/ios/build/
+/mobile/ios/DerivedData/

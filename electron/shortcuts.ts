@@ -285,7 +285,11 @@ export class ShortcutsHelper {
       if (!mainWindow || mainWindow.isDestroyed()) return
 
       // Show without activation; never steal focus from the foreground app.
-      if (!this.deps.isVisible()) this.deps.toggleMainWindow()
+      // When the phone companion is paired, create the session without
+      // forcing the PC overlay back on screen.
+      if (!this.deps.isVisible() && !this.deps.isCompanionPhonePaired()) {
+        this.deps.toggleMainWindow()
+      }
       mainWindow.webContents.send("new-chat-session")
     })
 

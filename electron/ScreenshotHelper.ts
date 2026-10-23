@@ -2,12 +2,12 @@
 
 import path from "node:path";
 import fs from "node:fs";
-import { app } from "electron";
+import { app, nativeImage } from "electron";
 import { v4 as uuidv4 } from "uuid";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import screenshot from "screenshot-desktop";
-import { detectImageMime } from "./ChatImageUtils";
+import { detectImageMime, jpegDimensions } from "./ChatImageUtils";
 
 const execFileAsync = promisify(execFile);
 
@@ -405,6 +405,37 @@ export class ScreenshotHelper {
     }
 
     return screenshotPath;
+  }
+
+  /** Import a phone JPEG into the same queues as desktop screenshots. */
+  public async importCameraPhoto(buffer: Buffer, isValid: () => boolean): Promise<string> {
+    if (buffer.length > 8 * 1024 * 1024 || buffer[0] !== 0xff || buffer[1] !== 0xd8) {
+      throw new Error("照片必须为不超过 8MB 的 JPEG");
+    }
+    const dimensions = jpegDimensions(buffer);
+    if (!dimensions || dimensions.width < 1 || dimensions.height < 1 || dimensions.width > 4096 || dimensions.height > 4096) {
+      throw new Error("照片无效或尺寸超过 4096 像素");
+    }
+    const image = nativeImage.createFromBuffer(buffer);
+    const size = image.getSize();
+    if (image.isEmpty() || size.width > 4096 || size.height > 4096) {
+      throw new Error("照片无效或尺寸超过 4096 像素");
+    }
+    const view = this.view;
+    const queue = view === "queue" ? this.screenshotQueue : this.extraScreenshotQueue;
+    const directory = view === "queue" ? this.screenshotDir : this.extraScreenshotDir;
+    const filepath = path.join(directory, `${uuidv4()}.png`);
+    await fs.promises.writeFile(filepath, image.toPNG());
+    if (!isValid() || this.view !== view) {
+      await fs.promises.unlink(filepath).catch(() => {});
+      throw new Error("会话或视图已切换，请重新拍摄");
+    }
+    queue.push(filepath);
+    if (queue.length > this.MAX_SCREENSHOTS) {
+      const removed = queue.shift();
+      if (removed) await fs.promises.unlink(removed).catch(() => {});
+    }
+    return filepath;
   }
 
   public async getImagePreview(filepath: string): Promise<string> {

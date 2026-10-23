@@ -16,6 +16,14 @@ steamgamecode 是一个面向技术面试和题目解答场景的 macOS 桌面�
 - 渲染进程或主进程异常退出时自动恢复，避免频繁崩溃导致应用不可用
 - 每次模型调用写入结构化日志（含 `finish_reason` 与思考 token 用量），便于定位空回复和截断
 
+## iPhone 相机输入（开发预览版）
+
+支持安装原生 iOS App，将手机拍摄的照片作为电脑截图的可选替代来源。电脑「手机伴随与相机」中选择来源后，现有采集按钮和 `Cmd/Ctrl+H` 会使用该来源；手机端也可主动拍照或触发电脑截图。图片进入相同的待发送附件队列。
+
+Xcode 工程：`mobile/ios/SteamGameCompanion.xcodeproj`。支持 iOS 17 及以上，真机安装需选择自己的签名 Team。拍照时保持 App 在前台；当前沿用现有 HTTP 明文局域网连接。
+
+开发、安装和联调步骤见 [iOS 开发说明](docs/ios-development.md)，通信约定见 [相机协议](docs/companion-camera-protocol.md)。
+
 ## 运行环境
 
 推荐环境：
@@ -232,6 +240,7 @@ setContentProtection(true)
 - 禁止挂载 WebView
 - DevTools 仅在 `OPEN_DEVTOOLS=1` 时打开
 - 自带截图功能会先隐藏应用窗口，再截取屏幕
+- 截图会先临时隐藏悬浮窗；截图后仅在原本可见且手机伴随端未配对时恢复。手机保持配对期间始终隐藏（包括短暂断线），回到电脑后按 `Cmd/Ctrl+B` 重新显示
 
 这些措施可以降低被普通录屏和截图工具捕获的风险，但不能保证绝对安全：
 

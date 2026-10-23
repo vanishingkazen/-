@@ -1,4 +1,6 @@
 export interface CompanionStatus {
+  captureSource?: "screen" | "phone"
+  cameraReady?: boolean
   running: boolean
   connected: boolean
   paired?: boolean

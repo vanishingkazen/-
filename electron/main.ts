@@ -13,6 +13,7 @@ import { VoiceRecognitionHelper } from "./VoiceRecognitionHelper"
 import { MouseShakeDetector } from "./MouseShakeDetector"
 import { ChatService } from "./ChatService"
 import { CompanionServer } from "./CompanionServer"
+import { shouldRestoreWindowAfterScreenshot } from "./ScreenshotWindowPolicy"
 import { installCrashRecovery, requestAppRestart } from "./CrashRecovery"
 import { describeApiUsageTotals } from "./ApiTelemetry"
 import {
@@ -92,6 +93,8 @@ const state = {
   chatService: null as ChatService | null,
   companionServer: null as CompanionServer | null,
 
+  captureEpoch: 0,
+
   // View and state management
   view: "queue" as AppView,
   problemInfo: null as ProblemInfo | null,
@@ -150,6 +153,7 @@ function initializeHelpers() {
     clearQueues,
     setView,
     isVisible: () => state.isWindowVisible,
+    isCompanionPhonePaired,
     toggleMainWindow,
     moveWindowLeft: () =>
       moveWindowHorizontal((x) =>
@@ -174,6 +178,12 @@ function initializeHelpers() {
     }
   })
   state.companionServer = new CompanionServer({
+    takeDesktopScreenshot: takeScreenScreenshot,
+    getCaptureContext: () => `${state.chatService?.getCurrentSession().id}:${state.view}:${state.captureEpoch}`,
+    importCameraPhoto: (buffer, isValid) => {
+      if (!state.screenshotHelper) throw new Error("图片服务尚未就绪")
+      return state.screenshotHelper.importCameraPhoto(buffer, isValid)
+    },
     getChatService: () => state.chatService,
     getVoiceRecognitionHelper: () => state.voiceRecognitionHelper,
     getScreenshotPaths: () => state.view === "queue" ? getScreenshotQueue() : getExtraScreenshotQueue(),
@@ -762,18 +772,41 @@ function getExtraScreenshotQueue(): string[] {
 }
 
 function clearQueues(): void {
+  state.captureEpoch += 1
   state.screenshotHelper?.clearQueues()
   state.problemInfo = null
   setView("queue")
   state.companionServer?.publish("refresh")
 }
 
+function isCompanionPhonePaired(): boolean {
+  return Boolean(state.companionServer?.getStatus().paired)
+}
+
 async function takeScreenshot(): Promise<string> {
+  if (state.companionServer?.usesPhoneCamera()) return state.companionServer.takePhonePhoto()
+  return takeScreenScreenshot()
+}
+
+async function takeScreenScreenshot(): Promise<string> {
   if (!state.mainWindow) throw new Error("No main window available")
+  // 截图需要先临时隐藏悬浮窗，避免把自身截进去。截图结束后只恢复到
+  // 截图前的可见状态：原本隐藏的窗口不要弹回；手机伴随端已配对时，
+  // 用户视线在手机上，也保持隐藏。配对状态在回调里读取，避免截图
+  // 等待期间手机断线/重连导致状态过期。
+  const wasVisibleBeforeCapture = state.isWindowVisible
   const screenshotPath = await (
     state.screenshotHelper?.takeScreenshot(
       () => hideMainWindow(),
-      () => showMainWindow()
+      () => {
+        const companionPaired = isCompanionPhonePaired()
+        if (shouldRestoreWindowAfterScreenshot({
+          wasVisible: wasVisibleBeforeCapture,
+          companionPaired
+        })) {
+          showMainWindow()
+        }
+      }
     ) || ""
   )
   if (screenshotPath) state.companionServer?.publish("refresh")

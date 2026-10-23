@@ -76,6 +76,7 @@ const electronAPI = {
     ipcRenderer.on("companion-session-selected", subscription)
     return () => ipcRenderer.removeListener("companion-session-selected", subscription)
   },
+  setCaptureSource: (source: "screen" | "phone") => ipcRenderer.invoke("companion-set-capture-source", source),
   getCompanionStatus: () => ipcRenderer.invoke("companion-get-status"),
   startCompanion: () => ipcRenderer.invoke("companion-start"),
   stopCompanion: () => ipcRenderer.invoke("companion-stop"),

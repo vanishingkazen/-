@@ -46,7 +46,7 @@ const { CompanionServer } = require(path.join(ROOT, "electron", "CompanionServer
 
 function request(port, hostHeader, requestPath, options = {}) {
   return new Promise((resolve, reject) => {
-    const body = options.body === undefined ? null : Buffer.from(JSON.stringify(options.body))
+    const body = options.rawBody || (options.body === undefined ? null : Buffer.from(JSON.stringify(options.body)))
     const req = http.request({
       host: "127.0.0.1",
       port,
@@ -56,7 +56,7 @@ function request(port, hostHeader, requestPath, options = {}) {
         Host: hostHeader,
         ...(options.origin ? { Origin: options.origin } : {}),
         ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),
-        ...(body ? { "Content-Type": "application/json", "Content-Length": body.length } : {})
+        ...(body ? { "Content-Type": options.contentType || "application/json", "Content-Length": body.length } : {})
       }
     }, (res) => {
       const chunks = []
@@ -251,8 +251,119 @@ test("配对、授权访问、截图读取、对话接受、事件推送与撤�
     finishSend?.({ success: false })
     socket?.close()
     await server.stop()
-    Module._load = originalLoad
-    require.extensions[".ts"] = originalTsLoader
-    fs.rmSync(tempRoot, { recursive: true, force: true })
   }
+})
+
+
+test("手机相机：遥控拍照入队、重复上传去重、会话切换拒绝、断开取消", async () => {
+  let context = "session-1:queue:0"
+  let imports = 0
+  const session = { id: "session-1", title: "Camera", messages: [] }
+  const server = new CompanionServer({
+    getCaptureContext: () => context,
+    importCameraPhoto: async (_buffer, isValid) => {
+      assert.equal(isValid(), true)
+      imports += 1
+      return capturedImage
+    },
+    getChatService: () => ({ isBusy: () => false, getCurrentSession: () => session, listSessions: () => [session] }),
+    getVoiceRecognitionHelper: () => null,
+    getScreenshotPaths: () => [],
+    takeScreenshot: async () => capturedImage,
+    getImagePreview: async () => "data:image/png;base64,AA==",
+    deleteScreenshot: async () => ({ success: true }),
+    notifyScreenshotTaken: () => {},
+    notifySessionSelected: () => {},
+    getStaticDirectory: () => staticDirectory
+  })
+  let socket
+  try {
+    await server.start()
+    const pairing = new URL(server.getStatus().pairingUrls[0].url)
+    const port = Number(pairing.port)
+    const origin = pairing.origin
+    const host = pairing.host
+    const pair = await request(port, host, "/api/pair", { method: "POST", origin, body: { token: pairing.hash.slice(1) } })
+    const token = pair.json.token
+    await assert.rejects(server.takePhonePhoto(), /未就绪/)
+    socket = new WebSocket(`ws://127.0.0.1:${port}/api/events`, { headers: { Host: host, Origin: origin } })
+    await new Promise((resolve, reject) => { socket.once("open", resolve); socket.once("error", reject) })
+    const snapshot = waitForSocketMessage(socket)
+    socket.send(JSON.stringify({ type: "auth", token }))
+    await snapshot
+    const ready = new Promise((resolve) => server.onStatusChange((status) => { if (status.cameraReady) resolve() }))
+    socket.send(JSON.stringify({ type: "camera.ready", ready: true }))
+    await ready
+    server.setCaptureSource("phone")
+    assert.equal(server.usesPhoneCamera(), true)
+    assert.throws(() => server.setCaptureSource("invalid"), /无效/)
+
+    const commandPromise = waitForSocketMessage(socket)
+    const capture = server.takePhonePhoto()
+    const command = await commandPromise
+    assert.equal(command.type, "capture.request")
+    const uploadOptions = { method: "POST", origin, token, contentType: "image/jpeg", rawBody: Buffer.from([0xff, 0xd8, 0xff, 0xd9]) }
+    const path = `/api/camera/photo/${command.requestId}`
+    const unauthorized = await request(port, host, path, { ...uploadOptions, token: "wrong" })
+    assert.equal(unauthorized.status, 401)
+    const uploaded = await request(port, host, path, uploadOptions)
+    assert.equal(uploaded.status, 200)
+    assert.equal(await capture, capturedImage)
+    assert.equal(imports, 1)
+    assert.equal((await request(port, host, path, uploadOptions)).status, 200)
+    assert.equal(imports, 1)
+
+    const local = await request(port, host, "/api/camera/request", { method: "POST", origin, token, body: {} })
+    assert.equal(local.status, 200)
+    assert.equal((await request(port, host, "/api/camera/request", { method: "POST", origin, token, body: {} })).status, 409)
+    context = "session-2:queue:0"
+    const stale = await request(port, host, `/api/camera/photo/${local.json.requestId}`, uploadOptions)
+    assert.equal(stale.status, 409)
+    assert.equal(imports, 1)
+
+    // Drain the refresh event before waiting for the next command.
+    const requestStarted = new Promise((resolve) => {
+      const listener = (raw) => {
+        const message = JSON.parse(String(raw))
+        if (message.type === "capture.request") { socket.off("message", listener); resolve(message) }
+      }
+      socket.on("message", listener)
+    })
+    const cancelled = server.takePhonePhoto()
+    const rejected = assert.rejects(cancelled, /连接已关闭/)
+    await requestStarted
+    server.disconnectPhone()
+    await rejected
+    assert.equal(server.getStatus().cameraReady, false)
+  } finally {
+    socket?.terminate()
+    await server.stop()
+  }
+})
+
+test("手机相机请求超时后可以重试", async (t) => {
+  const { PhoneCameraRequests } = require(path.join(ROOT, "electron/capture/PhoneCameraRequests.ts"))
+  const requests = new PhoneCameraRequests()
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const first = requests.start("session-1")
+  assert.equal(requests.isValid(first.id, "session-2"), false)
+  const rejected = assert.rejects(first.result, /超时/)
+  t.mock.timers.tick(30_001)
+  await rejected
+  const second = requests.start("session-2")
+  requests.beginUpload(second.id, "session-2")
+  assert.throws(() => requests.beginUpload(second.id, "session-2"), /正在上传/)
+  requests.finish(second.id, "photo.png")
+  assert.equal(await second.result, "photo.png")
+  assert.equal(requests.completedPath(second.id), "photo.png")
+  requests.cancel()
+  assert.equal(requests.completedPath(second.id), undefined)
+})
+
+
+test.after(() => {
+  Module._load = originalLoad
+  if (originalTsLoader) require.extensions[".ts"] = originalTsLoader
+  else delete require.extensions[".ts"]
+  fs.rmSync(tempRoot, { recursive: true, force: true })
 })

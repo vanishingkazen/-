@@ -64,6 +64,7 @@ export interface IShortcutsHelperDeps {
   clearQueues: () => void
   setView: (view: AppView) => void
   isVisible: () => boolean
+  isCompanionPhonePaired: () => boolean
   toggleMainWindow: () => void
   moveWindowLeft: () => void
   moveWindowRight: () => void

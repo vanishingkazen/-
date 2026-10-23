@@ -125,6 +125,7 @@ function createHarness(overrides = {}) {
     clearQueues: () => {},
     setView: () => {},
     isVisible: () => false,
+    isCompanionPhonePaired: () => false,
     toggleMainWindow: () => {
       state.toggles += 1
     },
@@ -181,6 +182,48 @@ test("无原生拦截器时注册 globalShortcut，Cmd+B 可切换窗口且退�
 
   for (const listener of quitListeners()) listener()
   assert.equal(electronState.unregisterAllCalls, 1)
+})
+
+test("手机已配对且悬浮窗隐藏时，Cmd+N 创建会话但不弹回 PC 窗口", () => {
+  const sent = []
+  const mainWindow = {
+    isDestroyed: () => false,
+    webContents: {
+      send: (channel) => sent.push(channel)
+    }
+  }
+  const { helper, state } = createHarness({
+    getMainWindow: () => mainWindow,
+    isVisible: () => false,
+    isCompanionPhonePaired: () => true
+  })
+  helper.registerGlobalShortcuts()
+
+  electronState.globalHandlers.get("CommandOrControl+N")()
+
+  assert.equal(state.toggles, 0)
+  assert.deepEqual(sent, ["new-chat-session"])
+})
+
+test("手机未配对且悬浮窗隐藏时，Cmd+N 仍恢复 PC 窗口供本地操作", () => {
+  const sent = []
+  const mainWindow = {
+    isDestroyed: () => false,
+    webContents: {
+      send: (channel) => sent.push(channel)
+    }
+  }
+  const { helper, state } = createHarness({
+    getMainWindow: () => mainWindow,
+    isVisible: () => false,
+    isCompanionPhonePaired: () => false
+  })
+  helper.registerGlobalShortcuts()
+
+  electronState.globalHandlers.get("CommandOrControl+N")()
+
+  assert.equal(state.toggles, 1)
+  assert.deepEqual(sent, ["new-chat-session"])
 })
 
 test("原生拦截器可用时不注册 globalShortcut，并为 Cmd+B 提交无修饰键的主键代码 11", { skip: process.platform !== "darwin" }, () => {

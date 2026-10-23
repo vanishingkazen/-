@@ -8,6 +8,7 @@ export interface VoiceConversationTurn {
 }
 
 export interface ElectronAPI {
+  setCaptureSource: (source: "screen" | "phone") => Promise<{ success: boolean; status?: CompanionStatus; error?: string }>
   getCompanionStatus: () => Promise<CompanionStatus>
   startCompanion: () => Promise<{ success: boolean; status?: CompanionStatus; error?: string }>
   stopCompanion: () => Promise<{ success: boolean; status?: CompanionStatus }>
